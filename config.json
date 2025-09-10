@@ -1,0 +1,27 @@
+{
+  "detection": {
+    "backends": ["retinaface", "mediapipe", "mtcnn", "opencv"],
+    "similarity_threshold": 0.35,
+    "face_confidence_min": 0.7,
+    "max_faces": 2
+  },
+  "performance": {
+    "detection_size": [320, 240],
+    "display_size": [640, 480],
+    "frame_skip": 3,
+    "queue_size": 2,
+    "camera_fps": 30
+  },
+  "smoothing": {
+    "window_size": 7,
+    "min_votes": 4,
+    "region_quantization": 10
+  },
+  "display": {
+    "show_fps": true,
+    "show_backend": true,
+    "show_processing_time": true,
+    "font_scale": 0.6,
+    "line_thickness": 2
+  }
+}
