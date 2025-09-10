@@ -5,6 +5,7 @@ from deepface import DeepFace
 import cv2
 import logging
 from tqdm import tqdm
+import re
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -128,16 +129,72 @@ def capture_face_from_webcam_auto(temp_filename="captured_face.jpg"):
         cv2.destroyAllWindows()
     return temp_path
 
+def _load_existing_db(output_file):
+    if os.path.exists(output_file):
+        try:
+            with open(output_file, "r") as f:
+                db = json.load(f)
+            if isinstance(db, dict):
+                logger.info(f"Loaded existing DB from {output_file} ({len(db)} people)")
+                return db
+            else:
+                logger.warning(f"{output_file} does not contain a dict - starting fresh")
+        except Exception as e:
+            logger.warning(f"Failed to load {output_file}: {e}")
+    return {}
+
+def _next_person_index(db):
+    max_idx = 0
+    for k in db.keys():
+        m = re.match(r"person(\d+)$", k, re.IGNORECASE)
+        if m:
+            try:
+                idx = int(m.group(1))
+                if idx > max_idx:
+                    max_idx = idx
+            except Exception:
+                pass
+    return max_idx + 1
+
 def create_face_database_from_webcam(output_file="face_db.json",
                                      model_name="ArcFace",
                                      detector_backend="retinaface"):
-    """Create face database by capturing face(s) from webcam"""
-    db = {}
+    """Create or append to face database by capturing face(s) from webcam.
+
+    - If output_file exists, it is loaded and new persons are appended.
+    - Default name suggested is person{N} where N is next available index.
+    - If provided name already exists, user can choose to append embeddings, overwrite or skip.
+    """
+    db = _load_existing_db(output_file)
+    next_idx = _next_person_index(db)
 
     while True:
-        name = input("Enter person's name (or press Enter to finish): ").strip()
-        if not name:
+        default_name = f"person{next_idx}"
+        prompt = f"Enter person's name (press Enter for '{default_name}', type 'exit' to finish): "
+        name_in = input(prompt).strip()
+        if name_in.lower() == "exit":
             break
+        name = name_in if name_in else default_name
+
+        # If name already exists, ask what to do
+        if name in db:
+            while True:
+                choice = input(f"'{name}' exists. (a)ppend, (o)verwrite, (s)kip [a]: ").strip().lower()
+                if choice == "" or choice == "a":
+                    action = "append"
+                    break
+                if choice == "o":
+                    action = "overwrite"
+                    break
+                if choice == "s":
+                    action = "skip"
+                    break
+                print("Invalid choice. Enter 'a', 'o' or 's'.")
+            if action == "skip":
+                logger.info(f"Skipping {name}")
+                continue
+        else:
+            action = "create"
 
         temp_img = capture_face_from_webcam_auto()
         if not temp_img:
@@ -146,19 +203,49 @@ def create_face_database_from_webcam(output_file="face_db.json",
 
         embeddings = get_face_embedding(temp_img, model_name, detector_backend, augment=True)
         if embeddings:
-            db[name] = {"embeddings": embeddings}
-            logger.info(f"Added {len(embeddings)} embeddings for {name}")
+            if action == "overwrite":
+                db[name] = {"embeddings": embeddings}
+                logger.info(f"Overwrote embeddings for {name} ({len(embeddings)} vectors)")
+            elif action == "append":
+                existing = db.get(name, {}).get("embeddings", [])
+                if not isinstance(existing, list):
+                    existing = []
+                existing.extend(embeddings)
+                db[name] = {"embeddings": existing}
+                logger.info(f"Appended {len(embeddings)} embeddings to {name} (total now {len(existing)})")
+            else:  # create
+                db[name] = {"embeddings": embeddings}
+                logger.info(f"Added {len(embeddings)} embeddings for new {name}")
+
+            # If we used the default personN name, increment next index to avoid collision
+            m = re.match(r"person(\d+)$", name, re.IGNORECASE)
+            if m:
+                try:
+                    used_idx = int(m.group(1))
+                    if used_idx >= next_idx:
+                        next_idx = used_idx + 1
+                except Exception:
+                    next_idx += 1
+            else:
+                # non-default name used, still increment to keep personN sequence free
+                next_idx += 1
         else:
             logger.warning(f"No face embeddings extracted for {name}")
 
         # delete temporary image
-        if os.path.exists(temp_img):
-            os.remove(temp_img)
+        try:
+            if temp_img and os.path.exists(temp_img):
+                os.remove(temp_img)
+        except Exception:
+            pass
 
     if db:
-        with open(output_file, "w") as f:
-            json.dump(db, f)
-        logger.info(f"Face database saved to {output_file} with {len(db)} people")
+        try:
+            with open(output_file, "w") as f:
+                json.dump(db, f, indent=2)
+            logger.info(f"Face database saved to {output_file} with {len(db)} people")
+        except Exception as e:
+            logger.error(f"Failed to save {output_file}: {e}")
     else:
         logger.error("No faces were added to the database")
 
