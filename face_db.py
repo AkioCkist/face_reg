@@ -3,8 +3,8 @@ import json
 import numpy as np
 from deepface import DeepFace
 import cv2
-from tqdm import tqdm
 import logging
+from tqdm import tqdm
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -26,25 +26,11 @@ def load_config():
         }
 
 def get_face_embedding(img_path, model_name="ArcFace", detector_backend="retinaface", augment=False):
-    """
-    Get face embeddings with optional data augmentation
-    
-    Args:
-        img_path: Path to image file
-        model_name: Face recognition model name
-        detector_backend: Face detection backend
-        augment: Whether to use data augmentation
-        
-    Returns:
-        List of embeddings
-    """
+    """Get face embeddings from an image path"""
     embeddings = []
-    
-    # Try different detector backends if the first one fails
     config = load_config()
     backends = config["detection"]["backends"]
-    
-    # First try with the preferred backend
+
     try:
         reps = DeepFace.represent(
             img_path=img_path,
@@ -57,12 +43,9 @@ def get_face_embedding(img_path, model_name="ArcFace", detector_backend="retinaf
             embeddings.extend([rep["embedding"] for rep in reps])
     except Exception as e:
         logger.warning(f"Failed with {detector_backend} detector: {e}")
-        
-        # Try with fallback detectors
         for backend in backends:
             if backend == detector_backend:
                 continue
-            
             try:
                 logger.info(f"Trying with {backend} detector")
                 reps = DeepFace.represent(
@@ -77,142 +60,86 @@ def get_face_embedding(img_path, model_name="ArcFace", detector_backend="retinaf
                     break
             except Exception as e2:
                 logger.warning(f"Failed with {backend} detector: {e2}")
-    
-    # Perform data augmentation if requested
-    if augment and embeddings:
-        # Load the image
-        img = cv2.imread(img_path)
-        if img is None:
-            return embeddings
-            
-        # Create augmented versions (slight rotations and shifts)
-        augmented_images = []
-        
-        # Slight rotations
-        for angle in [-5, 5]:
-            h, w = img.shape[:2]
-            center = (w // 2, h // 2)
-            rotation_matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
-            rotated = cv2.warpAffine(img, rotation_matrix, (w, h))
-            augmented_images.append(rotated)
-        
-        # Slight brightness variations
-        for factor in [0.9, 1.1]:
-            brightened = cv2.convertScaleAbs(img, alpha=factor, beta=0)
-            augmented_images.append(brightened)
-            
-        # Get embeddings for augmented images
-        for i, aug_img in enumerate(augmented_images):
-            # Save temporary file
-            temp_path = f"temp_aug_{i}.jpg"
-            cv2.imwrite(temp_path, aug_img)
-            
-            try:
-                aug_reps = DeepFace.represent(
-                    img_path=temp_path,
-                    model_name=model_name,
-                    detector_backend=detector_backend,
-                    enforce_detection=False,
-                    align=True
-                )
-                if aug_reps:
-                    embeddings.extend([rep["embedding"] for rep in aug_reps])
-            except Exception as e:
-                logger.warning(f"Failed to get embedding for augmented image {i}: {e}")
-            
-            # Remove temporary file
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
-    
     return embeddings
 
-def create_face_database(person_image_map, output_file="face_db.json", model_name="ArcFace", 
-                         detector_backend="retinaface", use_augmentation=True):
-    """
-    Create a face database from a dictionary mapping person names to image paths
-    
-    Args:
-        person_image_map: Dictionary mapping person names to image paths (str or list of str)
-        output_file: Path to output JSON file
-        model_name: Face recognition model name
-        detector_backend: Face detection backend
-        use_augmentation: Whether to use data augmentation
-    """
-    db = {}
-    
-    logger.info(f"Creating face database using {model_name} model and {detector_backend} detector")
-    logger.info(f"Data augmentation: {'enabled' if use_augmentation else 'disabled'}")
-    
-    for person_name, image_paths in tqdm(person_image_map.items(), desc="Processing people"):
-        # Convert single image path to list
-        if isinstance(image_paths, str):
-            image_paths = [image_paths]
-            
-        person_embeddings = []
-        
-        for img_path in image_paths:
-            logger.info(f"Processing {img_path} for {person_name}")
-            embeddings = get_face_embedding(img_path, model_name, detector_backend, use_augmentation)
-            
-            if embeddings:
-                person_embeddings.extend(embeddings)
-                logger.info(f"Got {len(embeddings)} embeddings from {img_path}")
-            else:
-                logger.warning(f"No faces found in {img_path}")
-        
-        if person_embeddings:
-            db[person_name] = {"embeddings": person_embeddings}
-            logger.info(f"Added {len(person_embeddings)} embeddings for {person_name}")
+def capture_face_from_webcam_auto(temp_filename="captured_face.jpg"):
+    """Automatically capture face from webcam when detected"""
+    cap = cv2.VideoCapture(0)
+    face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+    temp_path = None
+    frames_with_face = 0
+
+    logger.info("Opening webcam... will auto-capture when a face is detected.")
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            logger.error("Failed to capture frame from webcam")
+            break
+
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        faces = face_cascade.detectMultiScale(gray, 1.3, 5)
+
+        # Draw rectangle for visualization
+        for (x, y, w, h) in faces:
+            cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
+
+        cv2.imshow("Auto Face Capture (press 'q' to quit)", frame)
+
+        if len(faces) > 0:
+            frames_with_face += 1
         else:
-            logger.error(f"Could not find any faces for {person_name}. Skipping.")
-    
-    # Save the database
-    with open(output_file, "w") as f:
-        json.dump(db, f)
-    
-    logger.info(f"Face database saved to {output_file} with {len(db)} people")
-    return db
+            frames_with_face = 0
+
+        # Capture after face appears consistently for ~10 frames
+        if frames_with_face >= 10:
+            (x, y, w, h) = faces[0]
+            face_crop = frame[y:y+h, x:x+w]
+            temp_path = temp_filename
+            cv2.imwrite(temp_path, face_crop)
+            logger.info(f"Auto-captured face saved to {temp_path}")
+            break
+
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+    cap.release()
+    cv2.destroyAllWindows()
+    return temp_path
+
+def create_face_database_from_webcam(output_file="face_db.json",
+                                     model_name="ArcFace",
+                                     detector_backend="retinaface"):
+    """Create face database by capturing face(s) from webcam"""
+    db = {}
+
+    while True:
+        name = input("Enter person's name (or press Enter to finish): ").strip()
+        if not name:
+            break
+
+        temp_img = capture_face_from_webcam_auto()
+        if not temp_img:
+            logger.warning("No image captured. Skipping this person.")
+            continue
+
+        embeddings = get_face_embedding(temp_img, model_name, detector_backend, augment=True)
+        if embeddings:
+            db[name] = {"embeddings": embeddings}
+            logger.info(f"Added {len(embeddings)} embeddings for {name}")
+        else:
+            logger.warning(f"No face embeddings extracted for {name}")
+
+        # delete temporary image
+        if os.path.exists(temp_img):
+            os.remove(temp_img)
+
+    if db:
+        with open(output_file, "w") as f:
+            json.dump(db, f)
+        logger.info(f"Face database saved to {output_file} with {len(db)} people")
+    else:
+        logger.error("No faces were added to the database")
 
 if __name__ == "__main__":
-    # Detect available person*.jpg files in the current directory
-    person_files = [f for f in os.listdir(".") if f.startswith("person") and f.endswith((".jpg", ".jpeg", ".png"))]
-    
-    if not person_files:
-        logger.error("No person*.jpg files found in the current directory!")
-        exit(1)
-    
-    # Create a mapping of person names to image files
-    # You can customize this mapping if you have specific names for each person
-    person_map = {}
-    
-    # Option 1: Use numeric IDs from filenames (person1.jpg → Person 1)
-    for file in person_files:
-        person_id = file.split(".")[0]  # Remove extension
-        name = f"Person {person_id.replace('person', '')}"
-        person_map[name] = file
-    
-    # Option 2: Prompt for names
-    use_custom_names = input("Do you want to provide custom names for each person? (y/n): ").lower() == 'y'
-    
-    if use_custom_names:
-        person_map = {}
-        for file in person_files:
-            name = input(f"Enter name for {file}: ")
-            if name:
-                person_map[name] = file
-            else:
-                person_id = file.split(".")[0]
-                person_map[f"Person {person_id.replace('person', '')}"] = file
-    
-    # Create the face database
-    model_name = "ArcFace"  # Best accuracy
-    detector_backend = "retinaface"  # Best detection accuracy
-    use_augmentation = True  # Enable data augmentation for better accuracy
-    
-    create_face_database(
-        person_map,
-        output_file="face_db.json",
-        model_name=model_name,
-        detector_backend=detector_backend,
-        use_augmentation=use_augmentation
-    )
+    create_face_database_from_webcam()
