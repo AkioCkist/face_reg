@@ -69,6 +69,17 @@ def capture_face_from_webcam_auto(temp_filename="captured_face.jpg"):
     temp_path = None
     frames_with_face = 0
 
+    win_name = "Auto Face Capture (press 'q' to quit)"
+
+    # Create a named window and attempt to make it always on top.
+    # Some OpenCV builds/platforms support WND_PROP_TOPMOST; wrap in try/except for safety.
+    cv2.namedWindow(win_name, cv2.WINDOW_NORMAL)
+    try:
+        cv2.setWindowProperty(win_name, cv2.WND_PROP_TOPMOST, 1)
+    except Exception:
+        # If the property isn't supported, continue without crashing.
+        pass
+
     logger.info("Opening webcam... will auto-capture when a face is detected.")
 
     while True:
@@ -84,7 +95,13 @@ def capture_face_from_webcam_auto(temp_filename="captured_face.jpg"):
         for (x, y, w, h) in faces:
             cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
 
-        cv2.imshow("Auto Face Capture (press 'q' to quit)", frame)
+        # Re-apply the topmost property each frame — some window managers reset it.
+        try:
+            cv2.setWindowProperty(win_name, cv2.WND_PROP_TOPMOST, 1)
+        except Exception:
+            pass
+
+        cv2.imshow(win_name, frame)
 
         if len(faces) > 0:
             frames_with_face += 1
@@ -104,7 +121,11 @@ def capture_face_from_webcam_auto(temp_filename="captured_face.jpg"):
             break
 
     cap.release()
-    cv2.destroyAllWindows()
+    # Destroy only the named window we created.
+    try:
+        cv2.destroyWindow(win_name)
+    except Exception:
+        cv2.destroyAllWindows()
     return temp_path
 
 def create_face_database_from_webcam(output_file="face_db.json",
