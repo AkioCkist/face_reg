@@ -23,5 +23,21 @@
     "show_processing_time": true,
     "font_scale": 0.6,
     "line_thickness": 2
+  },
+  "anti_spoofing": {
+    "enabled": true,
+    "texture_variance_threshold": 100,
+    "edge_density_threshold": 0.05,
+    "color_variance_threshold": 200,
+    "motion_threshold": 5.0
+  },
+  "incremental_learning": {
+    "enabled": true,
+    "update_cooldown": 5.0,
+    "min_confidence": 0.8,
+    "update_frequency": 5,
+    "max_embeddings_per_person": 20,
+    "outlier_threshold": 0.3,
+    "weighted_alpha": 0.8
   }
 }

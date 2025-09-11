@@ -2,17 +2,26 @@
 
 Overview
 --------
-This repository implements a webcam-based face recognition workflow using DeepFace and OpenCV with built-in anti-spoofing protection. The system uses DeepFace's advanced anti-spoofing analysis module to detect and prevent fake face attacks (photos, videos, masks).
+This repository implements a webcam-based face recognition workflow using DeepFace and OpenCV with built-in anti-spoofing protection and incremental learning capabilities. The system uses DeepFace's advanced anti-spoofing analysis module to detect and prevent fake face attacks (photos, videos, masks), while continuously improving accuracy through adaptive learning.
+
+## Key Features
+- **Real-time Face Recognition** using DeepFace ArcFace model
+- **Anti-Spoofing Protection** to prevent photo/video attacks
+- **Incremental Learning** - system improves over time automatically
+- **Multiple Face Database** support with webcam capture
+- **Configurable Settings** via JSON configuration files
+- **Comprehensive Logging** for monitoring and debugging
 
 Included files
 --------------
 - `face_db.py` — create/append a face database (multi-embedding per person)
-- `live_face_recognition.py` — run live recognition against the DB
-- `config.json` — runtime settings (thresholds, detector backends, etc.)
+- `live_face_recognition.py` — run live recognition with incremental learning
+- `config/config.json` — runtime settings (thresholds, detector backends, learning parameters)
 - `setup_logging.py` — logging configuration module
 - `view_logs.py` — utility to view log files
 - `run_face_recognition.bat` — simple launcher (optional)
 - `DB_USAGE.md` — details about DB format and behavior
+- `INCREMENTAL_LEARNING.md` — detailed explanation of adaptive learning
 - `face_db.json` — (user data; recommended to keep out of git)
 - `logs/` — directory containing log files (created automatically)
 

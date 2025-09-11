@@ -15,6 +15,13 @@ logger, log_file_path = setup_logging("live_recognition", logging.INFO)
 logger.info(f"Live face recognition logging started. Log file: {log_file_path}")
 
 # ---------------------------
+# Global variables for incremental learning
+# ---------------------------
+last_update_time = {}  # Track last update time per person
+update_cooldown = 5.0  # Minimum seconds between updates
+successful_recognitions = {}  # Track successful recognitions for learning
+
+# ---------------------------
 # Anti-spoofing functions
 # ---------------------------
 def load_config():
@@ -118,6 +125,111 @@ def check_anti_spoofing_fallback(frame, face_region):
         return True, "Check failed, assuming real", 0.5
 
 # ---------------------------
+# Incremental Learning Functions
+# ---------------------------
+def calculate_embedding_distance(emb1, emb2):
+    """Calculate cosine distance between two embeddings"""
+    cos_sim = np.dot(emb1, emb2) / (np.linalg.norm(emb1) * np.linalg.norm(emb2))
+    return 1 - cos_sim
+
+def is_valid_embedding_update(new_embedding, existing_embeddings, threshold=None):
+    """Check if new embedding is valid for incremental learning"""
+    if threshold is None:
+        threshold = OUTLIER_THRESHOLD
+        
+    if not existing_embeddings:
+        return True
+    
+    # Calculate average distance to existing embeddings
+    distances = [calculate_embedding_distance(new_embedding, emb) for emb in existing_embeddings]
+    avg_distance = np.mean(distances)
+    
+    # If too far from existing embeddings, it might be an outlier
+    if avg_distance > threshold:
+        logger.warning(f"New embedding distance {avg_distance:.3f} exceeds threshold {threshold}")
+        return False
+    
+    return True
+
+def update_embedding_weighted(old_embeddings, new_embedding, alpha=None, max_embeddings=None):
+    """Update embeddings using weighted averaging with memory management"""
+    if alpha is None:
+        alpha = WEIGHTED_ALPHA
+    if max_embeddings is None:
+        max_embeddings = MAX_EMBEDDINGS
+        
+    if not old_embeddings:
+        return [new_embedding]
+    
+    # Validate new embedding
+    if not is_valid_embedding_update(new_embedding, old_embeddings):
+        logger.info("New embedding rejected as outlier")
+        return old_embeddings
+    
+    # Add new embedding to the list
+    updated_embeddings = old_embeddings.copy()
+    updated_embeddings.append(new_embedding)
+    
+    # Keep only the most recent embeddings
+    if len(updated_embeddings) > max_embeddings:
+        updated_embeddings = updated_embeddings[-max_embeddings:]
+    
+    logger.info(f"Added new embedding. Total embeddings: {len(updated_embeddings)}")
+    return updated_embeddings
+
+def save_updated_database(embeddings_db, filename="face_db.json"):
+    """Save updated embeddings database to file"""
+    try:
+        # Convert numpy arrays back to lists for JSON serialization
+        db_dict = {}
+        for name, embeddings in embeddings_db.items():
+            db_dict[name] = {
+                "embeddings": [emb.tolist() for emb in embeddings]
+            }
+        
+        with open(filename, "w") as f:
+            json.dump(db_dict, f, indent=2)
+        
+        logger.info(f"Database updated and saved to {filename}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to save database: {e}")
+        return False
+
+def should_update_embedding(person_name, confidence_score, min_confidence=None):
+    """Determine if we should update embedding based on conditions"""
+    if not LEARNING_ENABLED:
+        return False
+        
+    if min_confidence is None:
+        min_confidence = MIN_LEARNING_CONFIDENCE
+        
+    current_time = time.time()
+    
+    # Check confidence threshold
+    if confidence_score < min_confidence:
+        return False
+    
+    # Check cooldown period
+    if person_name in last_update_time:
+        time_since_last = current_time - last_update_time[person_name]
+        if time_since_last < UPDATE_COOLDOWN:
+            return False
+    
+    # Track successful recognitions
+    if person_name not in successful_recognitions:
+        successful_recognitions[person_name] = 0
+    
+    successful_recognitions[person_name] += 1
+    
+    # Update every N successful recognitions or after cooldown
+    if successful_recognitions[person_name] % UPDATE_FREQUENCY == 0:
+        last_update_time[person_name] = current_time
+        return True
+    
+    return False
+
+# ---------------------------
 # Load stored embeddings (local DB)
 # ---------------------------
 with open("face_db.json", "r") as f:
@@ -158,6 +270,15 @@ try:
     SHOW_FPS = config.get("display", {}).get("show_fps", True)
     SHOW_BACKEND = config.get("display", {}).get("show_backend", True)
     SHOW_PROCESSING_TIME = config.get("display", {}).get("show_processing_time", True)
+    
+    # Incremental learning settings
+    LEARNING_ENABLED = config.get("incremental_learning", {}).get("enabled", True)
+    UPDATE_COOLDOWN = config.get("incremental_learning", {}).get("update_cooldown", 5.0)
+    MIN_LEARNING_CONFIDENCE = config.get("incremental_learning", {}).get("min_confidence", 0.8)
+    UPDATE_FREQUENCY = config.get("incremental_learning", {}).get("update_frequency", 5)
+    MAX_EMBEDDINGS = config.get("incremental_learning", {}).get("max_embeddings_per_person", 20)
+    OUTLIER_THRESHOLD = config.get("incremental_learning", {}).get("outlier_threshold", 0.3)
+    WEIGHTED_ALPHA = config.get("incremental_learning", {}).get("weighted_alpha", 0.8)
     
 except Exception as e:
     print(f"[WARNING] Failed to load config.json: {e}. Using default settings.")
@@ -240,7 +361,31 @@ def recognition_worker(frame_queue, result_queue):
                                 best_match = name
 
                     if best_score < SIMILARITY_THRESHOLD:
+                        confidence_score = 1 - best_score  # Convert distance to confidence
                         label = f"{best_match} ({best_score:.2f}) [LIVE:{live_score:.2f}]"
+                        
+                        # Incremental Learning: Update embeddings if conditions are met
+                        if should_update_embedding(best_match, confidence_score):
+                            logger.info(f"Updating embeddings for {best_match} (conf: {confidence_score:.3f})")
+                            
+                            # Update embeddings using weighted averaging
+                            updated_embeddings = update_embedding_weighted(
+                                embeddings_db[best_match], 
+                                embedding
+                            )
+                            
+                            # Update in-memory database
+                            embeddings_db[best_match] = updated_embeddings
+                            
+                            # Save to file (async to avoid blocking)
+                            threading.Thread(
+                                target=save_updated_database, 
+                                args=(embeddings_db,), 
+                                daemon=True
+                            ).start()
+                            
+                            label += " [LEARNING]"
+                            
                     else:
                         label = f"Unknown ({best_score:.2f}) [LIVE:{live_score:.2f}]"
                 else:
