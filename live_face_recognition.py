@@ -471,6 +471,10 @@ except Exception as e:
     EMBEDDING_VARIANCE_THRESHOLD = 0.1
     MISMATCH_DETECTION_ENABLED = True
 
+# Announce incremental learning status (print + logger)
+print(f"[INFO] INCREMENTAL_LEARNING enabled: {LEARNING_ENABLED}")
+logger.info(f"INCREMENTAL_LEARNING enabled: {LEARNING_ENABLED}")
+
 # ---------------------------
 # Load ArcFace model once
 # ---------------------------
@@ -560,6 +564,7 @@ def recognition_worker(frame_queue, result_queue):
                             
                             if validation_passed:
                                 logger.info(f"Updating embeddings for {best_match} (conf: {confidence_score:.3f}, live_score: {live_score:.3f})")
+                                print(f"[INCREMENTAL_LEARNING] Updating embeddings for {best_match} (conf: {confidence_score:.3f}, live_score: {live_score:.3f})")
                                 
                                 # Update embeddings using weighted averaging
                                 updated_embeddings = update_embedding_weighted(
@@ -570,17 +575,19 @@ def recognition_worker(frame_queue, result_queue):
                                 # Update in-memory database
                                 embeddings_db[best_match] = updated_embeddings
                                 
-                                # Save to file (async to avoid blocking)
-                                threading.Thread(
-                                    target=save_updated_database, 
-                                    args=(embeddings_db,), 
-                                    daemon=True
-                                ).start()
+                                # Save to file synchronously to ensure persistence before exit
+                                save_success = save_updated_database(embeddings_db)
+                                if save_success:
+                                    logger.info(f"Synchronous save completed for {best_match}")
+                                    print(f"[INCREMENTAL_LEARNING] Saved updated embeddings for {best_match}")
+                                else:
+                                    logger.error(f"Synchronous save failed for {best_match}")
                                 
                                 label += " [LEARNING]"
                                 
                                 # Track this learning event for monitoring
                                 logger.info(f"Successfully updated {best_match}: {len(updated_embeddings)} total embeddings")
+                                print(f"[INCREMENTAL_LEARNING] Successfully updated {best_match}: {len(updated_embeddings)} embeddings")
                                 
                             else:
                                 # Validation failed - potential mismatch detected
@@ -593,6 +600,7 @@ def recognition_worker(frame_queue, result_queue):
                                     logger.error(f"   Reason: {validation_reason}")
                                     logger.error(f"   Confidence: {confidence_score:.3f}, Live Score: {live_score:.3f}")
                             
+
                         elif not is_live:
                             logger.debug(f"Skipping embedding update for {best_match}: face not live (score: {live_score:.3f})")
                         elif live_score <= MIN_LIVENESS_SCORE:
