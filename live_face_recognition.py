@@ -20,6 +20,13 @@ logger.info(f"Live face recognition logging started. Log file: {log_file_path}")
 last_update_time = {}  # Track last update time per person
 update_cooldown = 5.0  # Minimum seconds between updates
 successful_recognitions = {}  # Track successful recognitions for learning
+embedding_quality_history = {}  # Track embedding quality over time
+suspicious_activity = {}  # Track potential mismatches
+
+# Identity confirmation variables
+identity_confirmed = False  # Flag to track if identity is confirmed
+confirmed_identity = None   # Store the confirmed identity
+confirmation_count = {}     # Track confirmation counts per person
 
 # ---------------------------
 # Anti-spoofing functions
@@ -230,6 +237,172 @@ def should_update_embedding(person_name, confidence_score, min_confidence=None):
     return False
 
 # ---------------------------
+# Anti-Mismatch Protection Functions
+# ---------------------------
+def detect_embedding_drift(person_name, new_embedding, existing_embeddings):
+    """Detect if new embedding shows significant drift from person's profile"""
+    if not existing_embeddings:
+        return False, 0.0
+    
+    # Calculate distances to all existing embeddings
+    distances = [calculate_embedding_distance(new_embedding, emb) for emb in existing_embeddings]
+    
+    # Statistical analysis
+    avg_distance = np.mean(distances)
+    min_distance = np.min(distances)
+    std_distance = np.std(distances)
+    
+    # Define drift threshold (configurable)
+    drift_threshold = DRIFT_DETECTION_THRESHOLD
+    
+    # Check for significant drift
+    is_drift = (min_distance > drift_threshold) or (avg_distance > drift_threshold * 1.5)
+    
+    logger.debug(f"Drift analysis for {person_name}: avg={avg_distance:.3f}, min={min_distance:.3f}, std={std_distance:.3f}")
+    
+    return is_drift, min_distance
+
+def track_suspicious_activity(person_name, embedding, confidence_score):
+    """Track patterns that might indicate false matches"""
+    current_time = time.time()
+    
+    if person_name not in suspicious_activity:
+        suspicious_activity[person_name] = {
+            'recent_embeddings': [],
+            'confidence_history': [],
+            'timestamps': [],
+            'drift_events': 0,
+            'last_drift_time': 0
+        }
+    
+    activity = suspicious_activity[person_name]
+    
+    # Add current data
+    activity['recent_embeddings'].append(embedding)
+    activity['confidence_history'].append(confidence_score)
+    activity['timestamps'].append(current_time)
+    
+    # Keep only recent data (last 10 recognitions)
+    max_history = 10
+    if len(activity['recent_embeddings']) > max_history:
+        activity['recent_embeddings'] = activity['recent_embeddings'][-max_history:]
+        activity['confidence_history'] = activity['confidence_history'][-max_history:]
+        activity['timestamps'] = activity['timestamps'][-max_history:]
+    
+    # Analyze patterns
+    if len(activity['confidence_history']) >= 5:
+        # Check for declining confidence trend
+        recent_confidences = activity['confidence_history'][-5:]
+        confidence_trend = np.polyfit(range(len(recent_confidences)), recent_confidences, 1)[0]
+        
+        # Check for high variance in embeddings
+        if len(activity['recent_embeddings']) >= 3:
+            embedding_matrix = np.array(activity['recent_embeddings'][-3:])
+            pairwise_distances = []
+            for i in range(len(embedding_matrix)):
+                for j in range(i+1, len(embedding_matrix)):
+                    dist = calculate_embedding_distance(embedding_matrix[i], embedding_matrix[j])
+                    pairwise_distances.append(dist)
+            
+            embedding_variance = np.var(pairwise_distances) if pairwise_distances else 0
+            
+            # Flag suspicious patterns
+            if confidence_trend < -0.05 or embedding_variance > EMBEDDING_VARIANCE_THRESHOLD:
+                logger.warning(f"Suspicious pattern detected for {person_name}: "
+                             f"confidence_trend={confidence_trend:.3f}, "
+                             f"embedding_variance={embedding_variance:.3f}")
+                return True
+    
+    return False
+
+def validate_embedding_consistency(person_name, new_embedding, existing_embeddings):
+    """Multi-layer validation before accepting new embedding"""
+    
+    # Layer 1: Drift detection
+    is_drift, min_distance = detect_embedding_drift(person_name, new_embedding, existing_embeddings)
+    if is_drift:
+        logger.warning(f"Embedding drift detected for {person_name} (min_distance: {min_distance:.3f})")
+        return False, f"Drift detected (distance: {min_distance:.3f})"
+    
+    # Layer 2: Suspicious activity check
+    is_suspicious = track_suspicious_activity(person_name, new_embedding, 1.0)
+    if is_suspicious:
+        logger.warning(f"Suspicious activity pattern for {person_name}")
+        return False, "Suspicious activity pattern"
+    
+    # Layer 3: Embedding quality check
+    if not is_valid_embedding_update(new_embedding, existing_embeddings):
+        return False, "Failed quality check"
+    
+    return True, "Validation passed"
+
+# ---------------------------
+# Identity Confirmation Functions
+# ---------------------------
+def check_identity_confirmation(person_name, confidence_score, live_score):
+    """Check if identity should be confirmed and trigger program exit"""
+    global identity_confirmed, confirmed_identity, confirmation_count
+    
+    # Get confirmation settings from config
+    config = load_config()
+    confirmation_config = config.get("identity_confirmation", {})
+    
+    min_confirmations = confirmation_config.get("min_confirmations", 3)
+    min_confidence = confirmation_config.get("min_confidence_for_confirmation", 0.9)
+    min_live_score = confirmation_config.get("min_live_score_for_confirmation", 0.8)
+    
+    # Check if this recognition meets confirmation criteria
+    if (confidence_score >= min_confidence and 
+        live_score >= min_live_score and 
+        person_name != "Unknown"):
+        
+        # Initialize confirmation count for this person
+        if person_name not in confirmation_count:
+            confirmation_count[person_name] = 0
+        
+        confirmation_count[person_name] += 1
+        
+        logger.info(f"Identity confirmation progress for {person_name}: "
+                   f"{confirmation_count[person_name]}/{min_confirmations} "
+                   f"(conf: {confidence_score:.3f}, live: {live_score:.3f})")
+        
+        # Check if we have enough confirmations
+        if confirmation_count[person_name] >= min_confirmations:
+            identity_confirmed = True
+            confirmed_identity = person_name
+            
+            logger.info(f"✅ IDENTITY CONFIRMED: {person_name}")
+            logger.info(f"   Confirmations: {confirmation_count[person_name]}")
+            logger.info(f"   Final confidence: {confidence_score:.3f}")
+            logger.info(f"   Final live score: {live_score:.3f}")
+            
+            return True
+    else:
+        # Reset confirmation count if criteria not met
+        if person_name in confirmation_count:
+            confirmation_count[person_name] = 0
+            logger.debug(f"Reset confirmation count for {person_name} - criteria not met")
+    
+    return False
+
+def display_confirmation_status(display_frame):
+    """Display identity confirmation status on the frame"""
+    if identity_confirmed:
+        # Show confirmation success - program will exit immediately
+        cv2.putText(display_frame, f"IDENTITY CONFIRMED: {confirmed_identity}", 
+                   (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+    else:
+        # Show confirmation progress for any person being tracked
+        y_offset = 60
+        for person_name, count in confirmation_count.items():
+            if count > 0:
+                config = load_config()
+                min_confirmations = config.get("identity_confirmation", {}).get("min_confirmations", 3)
+                cv2.putText(display_frame, f"{person_name}: {count}/{min_confirmations} confirmations", 
+                           (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+                y_offset += 25
+
+# ---------------------------
 # Load stored embeddings (local DB)
 # ---------------------------
 with open("face_db.json", "r") as f:
@@ -275,10 +448,16 @@ try:
     LEARNING_ENABLED = config.get("incremental_learning", {}).get("enabled", True)
     UPDATE_COOLDOWN = config.get("incremental_learning", {}).get("update_cooldown", 5.0)
     MIN_LEARNING_CONFIDENCE = config.get("incremental_learning", {}).get("min_confidence", 0.8)
+    MIN_LIVENESS_SCORE = config.get("incremental_learning", {}).get("min_liveness_score", 0.7)
     UPDATE_FREQUENCY = config.get("incremental_learning", {}).get("update_frequency", 5)
     MAX_EMBEDDINGS = config.get("incremental_learning", {}).get("max_embeddings_per_person", 20)
     OUTLIER_THRESHOLD = config.get("incremental_learning", {}).get("outlier_threshold", 0.3)
     WEIGHTED_ALPHA = config.get("incremental_learning", {}).get("weighted_alpha", 0.8)
+    
+    # Anti-mismatch protection settings
+    DRIFT_DETECTION_THRESHOLD = config.get("incremental_learning", {}).get("drift_detection_threshold", 0.4)
+    EMBEDDING_VARIANCE_THRESHOLD = config.get("incremental_learning", {}).get("embedding_variance_threshold", 0.1)
+    MISMATCH_DETECTION_ENABLED = config.get("incremental_learning", {}).get("mismatch_detection_enabled", True)
     
 except Exception as e:
     print(f"[WARNING] Failed to load config.json: {e}. Using default settings.")
@@ -294,6 +473,19 @@ except Exception as e:
     SHOW_FPS = True
     SHOW_BACKEND = True
     SHOW_PROCESSING_TIME = True
+    
+    # Default incremental learning settings
+    LEARNING_ENABLED = True
+    UPDATE_COOLDOWN = 5.0
+    MIN_LEARNING_CONFIDENCE = 0.8
+    MIN_LIVENESS_SCORE = 0.7
+    UPDATE_FREQUENCY = 5
+    MAX_EMBEDDINGS = 20
+    OUTLIER_THRESHOLD = 0.3
+    WEIGHTED_ALPHA = 0.8
+    DRIFT_DETECTION_THRESHOLD = 0.4
+    EMBEDDING_VARIANCE_THRESHOLD = 0.1
+    MISMATCH_DETECTION_ENABLED = True
 
 # ---------------------------
 # Load ArcFace model once
@@ -364,30 +556,68 @@ def recognition_worker(frame_queue, result_queue):
                         confidence_score = 1 - best_score  # Convert distance to confidence
                         label = f"{best_match} ({best_score:.2f}) [LIVE:{live_score:.2f}]"
                         
-                        # Incremental Learning: Update embeddings if conditions are met
-                        if should_update_embedding(best_match, confidence_score):
-                            logger.info(f"Updating embeddings for {best_match} (conf: {confidence_score:.3f})")
+                        # Check for identity confirmation
+                        if check_identity_confirmation(best_match, confidence_score, live_score):
+                            # Identity confirmed - signal to exit immediately
+                            logger.info("Identity confirmed - triggering immediate exit")
+                            result_queue.put("IDENTITY_CONFIRMED")
+                            return  # Exit the worker thread immediately
+                        
+                        # Incremental Learning: Only update if face is LIVE and is a KNOWN person
+                        # Additional conditions: face must pass anti-spoofing AND be recognized
+                        if (is_live and live_score > MIN_LIVENESS_SCORE and 
+                            best_match != "Unknown" and 
+                            should_update_embedding(best_match, confidence_score)):
                             
-                            # Update embeddings using weighted averaging
-                            updated_embeddings = update_embedding_weighted(
-                                embeddings_db[best_match], 
-                                embedding
+                            # ANTI-MISMATCH PROTECTION: Multiple validation layers
+                            validation_passed, validation_reason = validate_embedding_consistency(
+                                best_match, embedding, embeddings_db[best_match]
                             )
                             
-                            # Update in-memory database
-                            embeddings_db[best_match] = updated_embeddings
+                            if validation_passed:
+                                logger.info(f"Updating embeddings for {best_match} (conf: {confidence_score:.3f}, live_score: {live_score:.3f})")
+                                
+                                # Update embeddings using weighted averaging
+                                updated_embeddings = update_embedding_weighted(
+                                    embeddings_db[best_match], 
+                                    embedding
+                                )
+                                
+                                # Update in-memory database
+                                embeddings_db[best_match] = updated_embeddings
+                                
+                                # Save to file (async to avoid blocking)
+                                threading.Thread(
+                                    target=save_updated_database, 
+                                    args=(embeddings_db,), 
+                                    daemon=True
+                                ).start()
+                                
+                                label += " [LEARNING]"
+                                
+                                # Track this learning event for monitoring
+                                logger.info(f"Successfully updated {best_match}: {len(updated_embeddings)} total embeddings")
+                                
+                            else:
+                                # Validation failed - potential mismatch detected
+                                logger.warning(f"MISMATCH PREVENTION: Blocked embedding update for {best_match}: {validation_reason}")
+                                label += f" [BLOCKED: {validation_reason}]"
+                                
+                                # Alert about potential security issue
+                                if MISMATCH_DETECTION_ENABLED:
+                                    logger.error(f"⚠️  SECURITY ALERT: Potential face mismatch detected for {best_match}")
+                                    logger.error(f"   Reason: {validation_reason}")
+                                    logger.error(f"   Confidence: {confidence_score:.3f}, Live Score: {live_score:.3f}")
                             
-                            # Save to file (async to avoid blocking)
-                            threading.Thread(
-                                target=save_updated_database, 
-                                args=(embeddings_db,), 
-                                daemon=True
-                            ).start()
-                            
-                            label += " [LEARNING]"
+                        elif not is_live:
+                            logger.debug(f"Skipping embedding update for {best_match}: face not live (score: {live_score:.3f})")
+                        elif live_score <= MIN_LIVENESS_SCORE:
+                            logger.debug(f"Skipping embedding update for {best_match}: low liveness score ({live_score:.3f} <= {MIN_LIVENESS_SCORE})")
                             
                     else:
                         label = f"Unknown ({best_score:.2f}) [LIVE:{live_score:.2f}]"
+                        # Never update embeddings for unknown faces
+                        logger.debug(f"Skipping embedding update: unknown person (score: {best_score:.3f})")
                 else:
                     # Face detected but failed anti-spoofing
                     label = f"SPOOF DETECTED: {spoof_reason}"
@@ -451,7 +681,12 @@ while True:
     # Get latest recognition results
     while not result_queue.empty():
         new_results = result_queue.get()
-        if new_results:
+        if new_results == "IDENTITY_CONFIRMED":
+            # Identity confirmed - exit immediately
+            logger.info("Identity confirmation received - exiting immediately")
+            print(f"[SUCCESS] Identity confirmed: {confirmed_identity}")
+            break
+        elif new_results:
             recent_results = new_results
 
     # Apply temporal smoothing
@@ -553,13 +788,12 @@ while True:
         cv2.putText(display_frame, f"FPS: {fps:.1f}", (10, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
 
+    # Display identity confirmation status
+    display_confirmation_status(display_frame)
+
     cv2.imshow("Live Face Recognition", display_frame)
 
-    if cv2.waitKey(1) & 0xFF == ord("q"):
+    if cv2.waitKey(1) & 0xFF == ord("q") or (identity_confirmed and confirmed_identity):
         break
 
-# Cleanup
-print("[INFO] Cleaning up...")
-cap.release()
-cv2.destroyAllWindows()
-frame_queue.put(None)  # Signal worker thread to exit
+

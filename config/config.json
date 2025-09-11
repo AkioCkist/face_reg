@@ -1,9 +1,14 @@
 {
   "detection": {
-    "backends": ["retinaface", "mediapipe", "mtcnn", "opencv"],
-    "similarity_threshold": 0.35,
-    "face_confidence_min": 0.7,
-    "max_faces": 2
+  "backends": ["e", "mediapipe", "mtcnn", "opencv"],
+  "similarity_threshold": 0.45,
+  "face_confidence_min": 0.7,
+  "identity_confirmation": {
+    "enabled": true,
+    "min_confirmations": 3,
+    "min_confidence_for_confirmation": 0.9,
+    "min_live_score_for_confirmation": 0.8
+  }
   },
   "performance": {
     "detection_size": [320, 240],
@@ -13,8 +18,8 @@
     "camera_fps": 30
   },
   "smoothing": {
-    "window_size": 7,
-    "min_votes": 4,
+    "window_size": 5,
+    "min_votes": 3,
     "region_quantization": 10
   },
   "display": {
@@ -26,18 +31,25 @@
   },
   "anti_spoofing": {
     "enabled": true,
+    "eye_aspect_ratio_threshold": 0.25,
+    "blink_frames_threshold": 3,
+    "motion_threshold": 5.0,
     "texture_variance_threshold": 100,
     "edge_density_threshold": 0.05,
-    "color_variance_threshold": 200,
-    "motion_threshold": 5.0
+    "color_variance_threshold": 200
   },
   "incremental_learning": {
     "enabled": true,
     "update_cooldown": 5.0,
     "min_confidence": 0.8,
+    "min_liveness_score": 0.7,
     "update_frequency": 5,
     "max_embeddings_per_person": 20,
     "outlier_threshold": 0.3,
-    "weighted_alpha": 0.8
+    "weighted_alpha": 0.8,
+    "drift_detection_threshold": 0.4,
+    "embedding_variance_threshold": 0.1,
+    "enable_auto_backup": true,
+    "mismatch_detection_enabled": true
   }
 }

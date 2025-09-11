@@ -35,6 +35,7 @@ All settings are configurable in `config/config.json`:
   "enabled": true,                    // Enable/disable learning
   "update_cooldown": 5.0,            // Seconds between updates
   "min_confidence": 0.8,             // Minimum confidence for learning
+  "min_liveness_score": 0.7,         // Minimum anti-spoofing score for learning
   "update_frequency": 5,             // Update every N recognitions
   "max_embeddings_per_person": 20,   // Max embeddings to store
   "outlier_threshold": 0.3,          // Distance threshold for outliers
@@ -54,11 +55,19 @@ All settings are configurable in `config/config.json`:
 
 ### Learning Triggers
 Learning occurs when ALL conditions are met:
-- ✅ Face passes anti-spoofing checks
+- ✅ Face passes anti-spoofing checks (is_live = True)
+- ✅ Anti-spoofing confidence > min_liveness_score (0.7)
+- ✅ Face is recognized as a known person (not "Unknown")
 - ✅ Recognition confidence > threshold (0.8)
 - ✅ Cooldown period has passed (5+ seconds)
 - ✅ Frequency counter reached (every 5 recognitions)
 - ✅ New embedding is not an outlier
+
+### Security Features
+- **No Learning from Spoofed Faces**: System will never update embeddings from fake faces
+- **No Learning from Unknown Faces**: Only updates embeddings for recognized individuals
+- **High Liveness Threshold**: Requires strong anti-spoofing confidence (0.7+)
+- **Recognition Confidence**: Only learns from high-confidence matches (0.8+)
 
 ### Visual Indicators
 - `[LEARNING]` appears in the label when system is updating

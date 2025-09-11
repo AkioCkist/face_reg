@@ -1,0 +1,49 @@
+{
+  "detection": {
+    "backends": ["retinaface", "mediapipe", "mtcnn", "opencv"],
+    "similarity_threshold": 0.45,
+    "face_confidence_min": 0.7
+  },
+  "anti_spoofing": {
+    "enabled": true,
+    "eye_aspect_ratio_threshold": 0.25,
+    "blink_frames_threshold": 3,
+    "motion_threshold": 5.0,
+    "texture_variance_threshold": 100,
+    "edge_density_threshold": 0.05,
+    "color_variance_threshold": 200
+  },
+  "incremental_learning": {
+    "enabled": true,
+    "update_cooldown": 5.0,
+    "min_confidence": 0.8,
+    "min_liveness_score": 0.7,
+    "update_frequency": 5,
+    "max_embeddings_per_person": 20,
+    "outlier_threshold": 0.3,
+    "weighted_alpha": 0.8,
+    "drift_detection_threshold": 0.4,
+    "embedding_variance_threshold": 0.1,
+    "mismatch_detection_enabled": true
+  },
+  "identity_confirmation": {
+    "enabled": true,
+    "min_confirmations": 3,
+    "min_confidence_for_confirmation": 0.9,
+    "min_live_score_for_confirmation": 0.8
+  },
+  "smoothing": {
+    "window_size": 5,
+    "min_votes": 3
+  },
+  "performance": {
+    "detection_size": [320, 240],
+    "display_size": [640, 480],
+    "frame_skip": 3
+  },
+  "display": {
+    "show_fps": true,
+    "show_backend": true,
+    "show_processing_time": true
+  }
+}
