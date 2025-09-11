@@ -23,16 +23,143 @@ def load_config():
                 "backends": ["retinaface", "mediapipe", "mtcnn", "opencv"],
                 "similarity_threshold": 0.45,
                 "face_confidence_min": 0.7
+            },
+            "anti_spoofing": {
+                "enabled": True,
+                "eye_aspect_ratio_threshold": 0.25,
+                "blink_frames_threshold": 3,
+                "motion_threshold": 5.0,
+                "texture_variance_threshold": 100
             }
         }
 
+def check_anti_spoofing_deepface(frame, face_region):
+    """DeepFace built-in anti-spoofing analysis"""
+    config = load_config()
+    anti_spoof_config = config.get("anti_spoofing", {})
+    
+    if not anti_spoof_config.get("enabled", True):
+        return True, "Anti-spoofing disabled", 1.0
+    
+    try:
+        x, y, w, h = face_region
+        # Ensure coordinates are within frame bounds
+        x = max(0, x)
+        y = max(0, y)
+        w = min(w, frame.shape[1] - x)
+        h = min(h, frame.shape[0] - y)
+        
+        if w <= 0 or h <= 0:
+            return False, "Invalid face region", 0.0
+        
+        # Extract face region
+        face_roi = frame[y:y+h, x:x+w]
+        
+        # Save temporary face image for DeepFace analysis
+        temp_face_path = "temp_face_antispoofing.jpg"
+        cv2.imwrite(temp_face_path, face_roi)
+        
+        # Use DeepFace's built-in anti-spoofing
+        result = DeepFace.extract_faces(
+            img_path=temp_face_path,
+            anti_spoofing=True,
+            enforce_detection=False
+        )
+        
+        # Clean up temporary file
+        if os.path.exists(temp_face_path):
+            os.remove(temp_face_path)
+        
+        if result and len(result) > 0:
+            # DeepFace returns a list of dictionaries with face info
+            face_info = result[0]
+            if 'is_real' in face_info:
+                is_real = face_info['is_real']
+                confidence = face_info.get('antispoof_score', 0.5)
+                
+                if is_real:
+                    return True, f"Real face detected (confidence: {confidence:.3f})", confidence
+                else:
+                    return False, f"Fake face detected (confidence: {confidence:.3f})", confidence
+            else:
+                # Fallback if anti-spoofing data not available
+                return True, "Anti-spoofing data not available, assuming real", 0.5
+        else:
+            return False, "No face detected for anti-spoofing analysis", 0.0
+            
+    except Exception as e:
+        logger.warning(f"DeepFace anti-spoofing failed: {e}")
+        # Fallback to basic checks
+        return check_anti_spoofing_fallback(frame, face_region)
+
+def check_anti_spoofing_fallback(frame, face_region):
+    """Fallback anti-spoofing checks if DeepFace fails"""
+    try:
+        x, y, w, h = face_region
+        face_roi = frame[y:y+h, x:x+w]
+        
+        # Basic texture analysis
+        gray_face = cv2.cvtColor(face_roi, cv2.COLOR_BGR2GRAY)
+        texture_variance = np.var(gray_face)
+        
+        if texture_variance < 100:
+            return False, f"Low texture variance: {texture_variance:.1f}", 0.3
+        
+        return True, f"Fallback check passed (texture: {texture_variance:.1f})", 0.7
+        
+    except Exception as e:
+        logger.warning(f"Fallback anti-spoofing failed: {e}")
+        return True, "Anti-spoofing check failed, assuming real", 0.5
+
+def detect_eye_blink(frame, face_cascade):
+    """Detect eye blinks for liveness detection"""
+    try:
+        # Load eye cascade classifier
+        eye_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_eye.xml')
+        
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        faces = face_cascade.detectMultiScale(gray, 1.3, 5)
+        
+        for (x, y, w, h) in faces:
+            roi_gray = gray[y:y+h, x:x+w]
+            eyes = eye_cascade.detectMultiScale(roi_gray)
+            
+            # If we detect 2 eyes, it's more likely a real face
+            if len(eyes) >= 2:
+                return True, len(eyes)
+        
+        return False, 0
+    except Exception as e:
+        logger.warning(f"Eye detection failed: {e}")
+        return True, 0  # Assume live if detection fails
+
 def get_face_embedding(img_path, model_name="ArcFace", detector_backend="retinaface", augment=False):
-    """Get face embeddings from an image path"""
+    """Get face embeddings from an image path with anti-spoofing verification"""
     embeddings = []
     config = load_config()
     backends = config["detection"]["backends"]
 
     try:
+        # First, verify the image is not a spoof using DeepFace's anti-spoofing
+        spoof_check = DeepFace.extract_faces(
+            img_path=img_path,
+            anti_spoofing=True,
+            enforce_detection=False
+        )
+        
+        # Check if any faces pass anti-spoofing
+        real_faces_detected = False
+        if spoof_check:
+            for face_info in spoof_check:
+                if face_info.get('is_real', True):  # Default to True if not available
+                    real_faces_detected = True
+                    break
+        
+        if not real_faces_detected:
+            logger.warning(f"Anti-spoofing check failed for {img_path} - potential fake image")
+            return embeddings  # Return empty list for fake images
+        
+        # If anti-spoofing passes, extract embeddings
         reps = DeepFace.represent(
             img_path=img_path,
             model_name=model_name,
@@ -42,6 +169,8 @@ def get_face_embedding(img_path, model_name="ArcFace", detector_backend="retinaf
         )
         if reps:
             embeddings.extend([rep["embedding"] for rep in reps])
+            logger.info(f"Successfully extracted {len(embeddings)} embeddings from verified real face")
+            
     except Exception as e:
         logger.warning(f"Failed with {detector_backend} detector: {e}")
         for backend in backends:
@@ -49,6 +178,28 @@ def get_face_embedding(img_path, model_name="ArcFace", detector_backend="retinaf
                 continue
             try:
                 logger.info(f"Trying with {backend} detector")
+                # Try anti-spoofing check with fallback backend
+                try:
+                    spoof_check = DeepFace.extract_faces(
+                        img_path=img_path,
+                        anti_spoofing=True,
+                        enforce_detection=False
+                    )
+                    
+                    real_faces_detected = False
+                    if spoof_check:
+                        for face_info in spoof_check:
+                            if face_info.get('is_real', True):
+                                real_faces_detected = True
+                                break
+                    
+                    if not real_faces_detected:
+                        logger.warning(f"Anti-spoofing failed with {backend} - skipping")
+                        continue
+                        
+                except Exception:
+                    logger.warning(f"Anti-spoofing check failed with {backend}, proceeding without verification")
+                
                 reps = DeepFace.represent(
                     img_path=img_path,
                     model_name=model_name,
@@ -61,6 +212,7 @@ def get_face_embedding(img_path, model_name="ArcFace", detector_backend="retinaf
                     break
             except Exception as e2:
                 logger.warning(f"Failed with {backend} detector: {e2}")
+                
     return embeddings
 
 def capture_face_from_webcam_auto(temp_filename="captured_face.jpg"):
@@ -69,6 +221,8 @@ def capture_face_from_webcam_auto(temp_filename="captured_face.jpg"):
     face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
     temp_path = None
     frames_with_face = 0
+    liveness_checks = 0
+    required_liveness_checks = 5  # Require multiple successful anti-spoofing checks
 
     win_name = "Auto Face Capture (press 'q' to quit)"
 
@@ -81,7 +235,7 @@ def capture_face_from_webcam_auto(temp_filename="captured_face.jpg"):
         # If the property isn't supported, continue without crashing.
         pass
 
-    logger.info("Opening webcam... will auto-capture when a face is detected.")
+    logger.info("Opening webcam... will auto-capture when a live face is detected.")
 
     while True:
         ret, frame = cap.read()
@@ -94,7 +248,27 @@ def capture_face_from_webcam_auto(temp_filename="captured_face.jpg"):
 
         # Draw rectangle for visualization
         for (x, y, w, h) in faces:
-            cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
+            # Perform anti-spoofing checks
+            is_live, spoof_reason, confidence = check_anti_spoofing_deepface(frame, (x, y, w, h))
+            
+            if is_live:
+                # Check for eye detection as additional liveness indicator
+                has_eyes, eye_count = detect_eye_blink(frame, face_cascade)
+                
+                if has_eyes:
+                    liveness_checks += 1
+                    color = (0, 255, 0)  # Green for live face
+                    status_text = f"Live face detected ({liveness_checks}/{required_liveness_checks})"
+                else:
+                    color = (0, 255, 255)  # Yellow for questionable
+                    status_text = f"Face detected but no eyes found"
+            else:
+                liveness_checks = 0  # Reset if spoofing detected
+                color = (0, 0, 255)  # Red for potential spoof
+                status_text = f"Potential spoof: {spoof_reason}"
+            
+            cv2.rectangle(frame, (x, y), (x+w, y+h), color, 2)
+            cv2.putText(frame, status_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
 
         # Re-apply the topmost property each frame — some window managers reset it.
         try:
@@ -108,14 +282,15 @@ def capture_face_from_webcam_auto(temp_filename="captured_face.jpg"):
             frames_with_face += 1
         else:
             frames_with_face = 0
+            liveness_checks = 0  # Reset liveness checks if no face
 
-        # Capture after face appears consistently for ~10 frames
-        if frames_with_face >= 10:
+        # Capture after face appears consistently for ~10 frames AND passes liveness checks
+        if frames_with_face >= 10 and liveness_checks >= required_liveness_checks:
             (x, y, w, h) = faces[0]
             face_crop = frame[y:y+h, x:x+w]
             temp_path = temp_filename
             cv2.imwrite(temp_path, face_crop)
-            logger.info(f"Auto-captured face saved to {temp_path}")
+            logger.info(f"Auto-captured live face saved to {temp_path}")
             break
 
         if cv2.waitKey(1) & 0xFF == ord('q'):

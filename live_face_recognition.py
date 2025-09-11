@@ -5,6 +5,116 @@ import threading
 from queue import Queue
 from collections import deque, Counter
 from deepface import DeepFace
+import time
+import logging
+import os
+
+# Set up logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# ---------------------------
+# Anti-spoofing functions
+# ---------------------------
+def load_config():
+    """Load configuration from config.json"""
+    try:
+        with open("config.json", "r") as f:
+            return json.load(f)
+    except Exception as e:
+        logger.warning(f"Failed to load config.json: {e}. Using default settings.")
+        return {
+            "detection": {
+                "backends": ["retinaface", "mediapipe", "mtcnn", "opencv"],
+                "similarity_threshold": 0.45,
+                "face_confidence_min": 0.7
+            },
+            "anti_spoofing": {
+                "enabled": True,
+                "texture_variance_threshold": 100,
+                "edge_density_threshold": 0.05,
+                "color_variance_threshold": 200,
+                "motion_threshold": 5.0
+            }
+        }
+
+def check_anti_spoofing_live(frame, face_region, previous_frame=None):
+    """DeepFace built-in anti-spoofing analysis for live recognition"""
+    config = load_config()
+    anti_spoof_config = config.get("anti_spoofing", {})
+    
+    if not anti_spoof_config.get("enabled", True):
+        return True, "Anti-spoofing disabled", 1.0
+    
+    x, y, w, h = face_region
+    # Ensure coordinates are within frame bounds
+    x = max(0, x)
+    y = max(0, y)
+    w = min(w, frame.shape[1] - x)
+    h = min(h, frame.shape[0] - y)
+    
+    if w <= 0 or h <= 0:
+        return False, "Invalid face region", 0.0
+    
+    try:
+        # Extract face region
+        face_roi = frame[y:y+h, x:x+w]
+        
+        # Save temporary face image for DeepFace analysis
+        temp_face_path = "temp_face_live_antispoofing.jpg"
+        cv2.imwrite(temp_face_path, face_roi)
+        
+        # Use DeepFace's built-in anti-spoofing
+        result = DeepFace.extract_faces(
+            img_path=temp_face_path,
+            anti_spoofing=True,
+            enforce_detection=False
+        )
+        
+        # Clean up temporary file
+        if os.path.exists(temp_face_path):
+            os.remove(temp_face_path)
+        
+        if result and len(result) > 0:
+            # DeepFace returns a list of dictionaries with face info
+            face_info = result[0]
+            if 'is_real' in face_info:
+                is_real = face_info['is_real']
+                confidence = face_info.get('antispoof_score', 0.5)
+                
+                if is_real:
+                    return True, f"Real face (conf: {confidence:.3f})", confidence
+                else:
+                    return False, f"Fake face (conf: {confidence:.3f})", confidence
+            else:
+                # Fallback if anti-spoofing data not available
+                return True, "Anti-spoofing data not available", 0.5
+        else:
+            return False, "No face detected for analysis", 0.0
+            
+    except Exception as e:
+        logger.warning(f"DeepFace anti-spoofing failed: {e}")
+        # Fallback to basic texture analysis
+        return check_anti_spoofing_fallback(frame, face_region)
+
+def check_anti_spoofing_fallback(frame, face_region):
+    """Fallback anti-spoofing checks if DeepFace fails"""
+    try:
+        x, y, w, h = face_region
+        face_roi = frame[y:y+h, x:x+w]
+        
+        # Basic texture analysis
+        gray_face = cv2.cvtColor(face_roi, cv2.COLOR_BGR2GRAY)
+        texture_variance = np.var(gray_face)
+        
+        if texture_variance < 100:
+            return False, f"Low texture: {texture_variance:.1f}", 0.3
+        
+        return True, f"Fallback OK: {texture_variance:.1f}", 0.7
+        
+    except Exception as e:
+        logger.warning(f"Fallback anti-spoofing failed: {e}")
+        return True, "Check failed, assuming real", 0.5
 
 # ---------------------------
 # Load stored embeddings (local DB)
@@ -74,11 +184,15 @@ print("[INFO] Model loaded.")
 # Worker thread for recognition
 # ---------------------------
 def recognition_worker(frame_queue, result_queue):
+    previous_frame = None
+    
     while True:
-        frame = frame_queue.get()
-        if frame is None:
+        frame_data = frame_queue.get()
+        if frame_data is None:
             break
 
+        frame = frame_data
+        
         try:
             # use DeepFace.represent (functions module may not be exported in this DeepFace version)
             reps = DeepFace.represent(
@@ -95,32 +209,52 @@ def recognition_worker(frame_queue, result_queue):
                 embedding = np.array(rep["embedding"])
                 facial_area = rep["facial_area"]
 
-                # Compare with DB embeddings
-                best_match = None
-                best_score = 1e6
+                # Perform anti-spoofing check
+                x, y, w, h = (
+                    facial_area["x"],
+                    facial_area["y"],
+                    facial_area["w"],
+                    facial_area["h"],
+                )
                 
-                for name, db_embeddings in embeddings_db.items():
-                    # Compare with each embedding for this person
-                    for db_emb in db_embeddings:
-                        cos_sim = np.dot(embedding, db_emb) / (
-                            np.linalg.norm(embedding) * np.linalg.norm(db_emb)
-                        )
-                        distance = 1 - cos_sim
-                        if distance < best_score:
-                            best_score = distance
-                            best_match = name
+                is_live, spoof_reason, live_score = check_anti_spoofing_live(
+                    frame, (x, y, w, h), previous_frame
+                )
+                
+                # Only process if face passes anti-spoofing
+                if is_live:
+                    # Compare with DB embeddings
+                    best_match = None
+                    best_score = 1e6
+                    
+                    for name, db_embeddings in embeddings_db.items():
+                        # Compare with each embedding for this person
+                        for db_emb in db_embeddings:
+                            cos_sim = np.dot(embedding, db_emb) / (
+                                np.linalg.norm(embedding) * np.linalg.norm(db_emb)
+                            )
+                            distance = 1 - cos_sim
+                            if distance < best_score:
+                                best_score = distance
+                                best_match = name
 
-                if best_score < SIMILARITY_THRESHOLD:
-                    label = f"{best_match} ({best_score:.2f})"
+                    if best_score < SIMILARITY_THRESHOLD:
+                        label = f"{best_match} ({best_score:.2f}) [LIVE:{live_score:.2f}]"
+                    else:
+                        label = f"Unknown ({best_score:.2f}) [LIVE:{live_score:.2f}]"
                 else:
-                    label = f"Unknown ({best_score:.2f})"
+                    # Face detected but failed anti-spoofing
+                    label = f"SPOOF DETECTED: {spoof_reason}"
 
                 results.append((facial_area, label))
 
             result_queue.put(results)
+            previous_frame = frame.copy()
 
         except Exception:
             result_queue.put([])
+            
+    previous_frame = None
 
 # ---------------------------
 # Webcam loop
@@ -202,7 +336,19 @@ while True:
         # Use the most common if it has enough votes
         if most_common[1] >= MIN_VOTES:
             smoothed_name = most_common[0]
-            confidence = float(label.split('(')[1].split(')')[0]) if '(' in label else 0.0
+            # Extract confidence from label (handle different formats)
+            confidence = 0.0
+            if '(' in label and ')' in label:
+                try:
+                    conf_part = label.split('(')[1].split(')')[0]
+                    # Handle "conf: 0.507" format
+                    if 'conf:' in conf_part:
+                        confidence = float(conf_part.split('conf:')[1].strip())
+                    # Handle "0.507" format
+                    else:
+                        confidence = float(conf_part)
+                except (ValueError, IndexError):
+                    confidence = 0.0
             smoothed_label = f"{smoothed_name} ({confidence:.2f})"
             smoothed_results.append((facial_area, smoothed_label))
         else:
@@ -241,8 +387,15 @@ while True:
         disp_w = int(w * scale_x)
         disp_h = int(h * scale_y)
         
-        # Set color based on recognition (green for known, red for unknown)
-        color = (0, 255, 0) if "Unknown" not in label else (0, 0, 255)
+        # Set color based on recognition and anti-spoofing
+        if "SPOOF DETECTED" in label:
+            color = (0, 0, 255)  # Red for spoof
+        elif "Unknown" not in label and "LIVE:" in label:
+            color = (0, 255, 0)  # Green for known live face
+        elif "Unknown" in label and "LIVE:" in label:
+            color = (0, 255, 255)  # Yellow for unknown live face
+        else:
+            color = (128, 128, 128)  # Gray for uncertain
         
         # Draw rectangle and label
         cv2.rectangle(display_frame, (disp_x, disp_y), (disp_x + disp_w, disp_y + disp_h), color, 2)

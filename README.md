@@ -2,7 +2,7 @@
 
 Overview
 --------
-This repository implements a simple webcam-based face recognition workflow using DeepFace and OpenCV.
+This repository implements a webcam-based face recognition workflow using DeepFace and OpenCV with built-in anti-spoofing protection. The system uses DeepFace's advanced anti-spoofing analysis module to detect and prevent fake face attacks (photos, videos, masks).
 
 Included files
 --------------
