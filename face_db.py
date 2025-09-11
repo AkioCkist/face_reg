@@ -7,10 +7,14 @@ import logging
 from tqdm import tqdm
 import re
 from setup_logging import setup_logging
+from persistence.repository import FaceRepository
 
 # Set up logging to file and console
 logger, log_file_path = setup_logging("face_db", logging.INFO)
 logger.info(f"Face database logging started. Log file: {log_file_path}")
+
+# Initialize repository for DB persistence
+repo = FaceRepository("face_db.json")
 
 def load_config():
     """Load configuration from config.json"""
@@ -306,18 +310,17 @@ def capture_face_from_webcam_auto(temp_filename="captured_face.jpg"):
     return temp_path
 
 def _load_existing_db(output_file):
-    if os.path.exists(output_file):
-        try:
-            with open(output_file, "r") as f:
-                db = json.load(f)
-            if isinstance(db, dict):
-                logger.info(f"Loaded existing DB from {output_file} ({len(db)} people)")
-                return db
-            else:
-                logger.warning(f"{output_file} does not contain a dict - starting fresh")
-        except Exception as e:
-            logger.warning(f"Failed to load {output_file}: {e}")
-    return {}
+    # Use repository to load and convert to legacy format {name: {"embeddings": [...]}}
+    try:
+        raw = repo.load()
+        out = {}
+        for name, embeddings in raw.items():
+            out[name] = {"embeddings": [emb.tolist() if hasattr(emb, 'tolist') else emb for emb in embeddings]}
+        logger.info(f"Loaded existing DB via repository ({len(out)} people)")
+        return out
+    except Exception as e:
+        logger.warning(f"Failed to load DB via repository: {e}")
+        return {}
 
 def _next_person_index(db):
     max_idx = 0
@@ -393,11 +396,12 @@ def create_face_database_from_webcam(output_file="face_db.json",
                 db[name] = {"embeddings": embeddings}
                 logger.info(f"Added {len(embeddings)} embeddings for new {name}")
 
-            # Save database immediately after each successful addition
+            # Save database immediately after each successful addition via repository
             try:
-                with open(output_file, "w") as f:
-                    json.dump(db, f, indent=2)
-                logger.info(f"Database updated and saved to {output_file}")
+                # Convert current db (legacy format) to repository format
+                repo_db = {k: v.get("embeddings", []) if isinstance(v, dict) else [] for k, v in db.items()}
+                repo.save(repo_db)
+                logger.info(f"Database updated and saved via repository: {repo.path}")
             except Exception as e:
                 logger.error(f"Failed to save database after adding {name}: {e}")
 
@@ -423,27 +427,26 @@ def create_face_database_from_webcam(output_file="face_db.json",
         except Exception:
             pass
 
-    # Final save to ensure everything is persisted
+    # Final save to ensure everything is persisted via repository
     if db:
         try:
-            with open(output_file, "w") as f:
-                json.dump(db, f, indent=2)
-            logger.info(f"Final save: Face database saved to {output_file} with {len(db)} people")
+            repo_db = {k: v.get("embeddings", []) if isinstance(v, dict) else [] for k, v in db.items()}
+            repo.save(repo_db)
+            logger.info(f"Final save: Face database saved via repository: {repo.path} with {len(db)} people")
             print(f"\n✅ Database saved successfully!")
-            print(f"📁 File: {output_file}")
+            print(f"📁 File: {repo.path}")
             print(f"👥 Total people: {len(db)}")
         except Exception as e:
-            logger.error(f"Failed to save {output_file}: {e}")
+            logger.error(f"Failed to save via repository: {e}")
             print(f"\n❌ Failed to save database: {e}")
     else:
         logger.warning("No faces were added to the database")
         print("\n⚠️  No faces were added to the database")
         # Create an empty database file so the live recognition doesn't crash
         try:
-            with open(output_file, "w") as f:
-                json.dump({}, f, indent=2)
-            logger.info(f"Created empty database file: {output_file}")
-            print(f"📄 Created empty database file: {output_file}")
+            repo.save({})
+            logger.info(f"Created empty database file via repository: {repo.path}")
+            print(f"📄 Created empty database file: {repo.path}")
         except Exception as e:
             logger.error(f"Failed to create empty database file: {e}")
 

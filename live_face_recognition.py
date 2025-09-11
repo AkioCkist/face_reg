@@ -9,6 +9,7 @@ import time
 import logging
 import os
 from setup_logging import setup_logging
+from persistence.repository import FaceRepository
 
 # Set up logging to file and console
 logger, log_file_path = setup_logging("live_recognition", logging.INFO)
@@ -187,20 +188,12 @@ def update_embedding_weighted(old_embeddings, new_embedding, alpha=None, max_emb
 def save_updated_database(embeddings_db, filename="face_db.json"):
     """Save updated embeddings database to file"""
     try:
-        # Convert numpy arrays back to lists for JSON serialization
-        db_dict = {}
-        for name, embeddings in embeddings_db.items():
-            db_dict[name] = {
-                "embeddings": [emb.tolist() for emb in embeddings]
-            }
-        
-        with open(filename, "w") as f:
-            json.dump(db_dict, f, indent=2)
-        
-        logger.info(f"Database updated and saved to {filename}")
+        # Use repository to save (it converts numpy arrays)
+        repo.save(embeddings_db)
+        logger.info(f"Database updated and saved via repository: {repo.path}")
         return True
     except Exception as e:
-        logger.error(f"Failed to save database: {e}")
+        logger.error(f"Failed to save database via repository: {e}")
         return False
 
 def should_update_embedding(person_name, confidence_score, min_confidence=None):
@@ -403,20 +396,11 @@ def display_confirmation_status(display_frame):
                 y_offset += 25
 
 # ---------------------------
-# Load stored embeddings (local DB)
+# Persistence: use repository for DB load/save
 # ---------------------------
-with open("face_db.json", "r") as f:
-    db = json.load(f)
-
-# New DB format has multiple embeddings per person
-embeddings_db = {}
-for name, data in db.items():
-    if "embeddings" in data:
-        # New format with multiple embeddings per person
-        embeddings_db[name] = [np.array(emb) for emb in data["embeddings"]]
-    elif "embedding" in data:
-        # Old format with single embedding per person
-        embeddings_db[name] = [np.array(data["embedding"])]
+# Initialize repository (creates directory if needed) and load DB
+repo = FaceRepository("face_db.json")
+embeddings_db = repo.load()
 
 # ---------------------------
 # Configuration: load from config.json
@@ -652,6 +636,14 @@ face_history = {}  # Maps face regions to a history of identifications
 recent_results = []  # Store recent results for rendering
 
 print("[INFO] Starting webcam... Press 'q' to quit.")
+# Create a named window and attempt to make it always-on-top (platform-dependent)
+window_name = "Live Face Recognition"
+cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+try:
+    # OpenCV provides setWindowProperty for some builds; try to set topmost
+    cv2.setWindowProperty(window_name, cv2.WND_PROP_TOPMOST, 1)
+except Exception:
+    logger.debug("Could not set window topmost via OpenCV; window may not be always on top")
 
 while True:
     ret, frame = cap.read()
@@ -791,9 +783,14 @@ while True:
     # Display identity confirmation status
     display_confirmation_status(display_frame)
 
-    cv2.imshow("Live Face Recognition", display_frame)
+    cv2.imshow(window_name, display_frame)
 
     if cv2.waitKey(1) & 0xFF == ord("q") or (identity_confirmed and confirmed_identity):
         break
+
+# Cleanup resources
+cap.release()
+cv2.destroyAllWindows()
+
 
 
