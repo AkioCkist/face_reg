@@ -393,6 +393,14 @@ def create_face_database_from_webcam(output_file="face_db.json",
                 db[name] = {"embeddings": embeddings}
                 logger.info(f"Added {len(embeddings)} embeddings for new {name}")
 
+            # Save database immediately after each successful addition
+            try:
+                with open(output_file, "w") as f:
+                    json.dump(db, f, indent=2)
+                logger.info(f"Database updated and saved to {output_file}")
+            except Exception as e:
+                logger.error(f"Failed to save database after adding {name}: {e}")
+
             # If we used the default personN name, increment next index to avoid collision
             m = re.match(r"person(\d+)$", name, re.IGNORECASE)
             if m:
@@ -415,15 +423,29 @@ def create_face_database_from_webcam(output_file="face_db.json",
         except Exception:
             pass
 
+    # Final save to ensure everything is persisted
     if db:
         try:
             with open(output_file, "w") as f:
                 json.dump(db, f, indent=2)
-            logger.info(f"Face database saved to {output_file} with {len(db)} people")
+            logger.info(f"Final save: Face database saved to {output_file} with {len(db)} people")
+            print(f"\n✅ Database saved successfully!")
+            print(f"📁 File: {output_file}")
+            print(f"👥 Total people: {len(db)}")
         except Exception as e:
             logger.error(f"Failed to save {output_file}: {e}")
+            print(f"\n❌ Failed to save database: {e}")
     else:
-        logger.error("No faces were added to the database")
+        logger.warning("No faces were added to the database")
+        print("\n⚠️  No faces were added to the database")
+        # Create an empty database file so the live recognition doesn't crash
+        try:
+            with open(output_file, "w") as f:
+                json.dump({}, f, indent=2)
+            logger.info(f"Created empty database file: {output_file}")
+            print(f"📄 Created empty database file: {output_file}")
+        except Exception as e:
+            logger.error(f"Failed to create empty database file: {e}")
 
 if __name__ == "__main__":
     create_face_database_from_webcam()
