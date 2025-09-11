@@ -6,10 +6,11 @@ import cv2
 import logging
 from tqdm import tqdm
 import re
+from setup_logging import setup_logging
 
-# Set up logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+# Set up logging to file and console
+logger, log_file_path = setup_logging("face_db", logging.INFO)
+logger.info(f"Face database logging started. Log file: {log_file_path}")
 
 def load_config():
     """Load configuration from config.json"""

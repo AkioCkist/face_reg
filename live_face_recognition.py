@@ -8,10 +8,11 @@ from deepface import DeepFace
 import time
 import logging
 import os
+from setup_logging import setup_logging
 
-# Set up logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+# Set up logging to file and console
+logger, log_file_path = setup_logging("live_recognition", logging.INFO)
+logger.info(f"Live face recognition logging started. Log file: {log_file_path}")
 
 # ---------------------------
 # Anti-spoofing functions

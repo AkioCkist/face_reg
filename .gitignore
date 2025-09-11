@@ -1,1 +1,4 @@
 face_db.json
+logs/
+*.log
+temp_face_*.jpg

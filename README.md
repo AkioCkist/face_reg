@@ -9,9 +9,12 @@ Included files
 - `face_db.py` — create/append a face database (multi-embedding per person)
 - `live_face_recognition.py` — run live recognition against the DB
 - `config.json` — runtime settings (thresholds, detector backends, etc.)
+- `setup_logging.py` — logging configuration module
+- `view_logs.py` — utility to view log files
 - `run_face_recognition.bat` — simple launcher (optional)
 - `DB_USAGE.md` — details about DB format and behavior
 - `face_db.json` — (user data; recommended to keep out of git)
+- `logs/` — directory containing log files (created automatically)
 
 Supported OS and Python
 -----------------------
@@ -94,6 +97,14 @@ Using the scripts
 
    - The script loads `face_db.json` and runs frame-by-frame recognition from your webcam.
    - Use `config.json` to tune detection backends, similarity thresholds, and confidence filters.
+
+3. View log files
+
+   python view_logs.py
+
+   - Lists all log files with timestamps and sizes
+   - Allows you to view the contents of any log file
+   - Logs are automatically created in the `logs/` directory with timestamps
 
 Tips and behavior notes
 -----------------------
