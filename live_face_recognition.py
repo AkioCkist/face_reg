@@ -20,7 +20,7 @@ logger.info(f"Live face recognition logging started. Log file: {log_file_path}")
 def load_config():
     """Load configuration from config.json"""
     try:
-        with open("config.json", "r") as f:
+        with open("config/config.json", "r") as f:
             return json.load(f)
     except Exception as e:
         logger.warning(f"Failed to load config.json: {e}. Using default settings.")
@@ -137,7 +137,7 @@ for name, data in db.items():
 # Configuration: load from config.json
 # ---------------------------
 try:
-    with open("config.json", "r") as f:
+    with open("config/config.json", "r") as f:
         config = json.load(f)
     
     # Extract configuration values with defaults

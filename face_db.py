@@ -15,7 +15,7 @@ logger.info(f"Face database logging started. Log file: {log_file_path}")
 def load_config():
     """Load configuration from config.json"""
     try:
-        with open("config.json", "r") as f:
+        with open("config/config.json", "r") as f:
             return json.load(f)
     except Exception as e:
         logger.warning(f"Failed to load config.json: {e}. Using default settings.")
