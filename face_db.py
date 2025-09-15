@@ -335,45 +335,15 @@ def _next_person_index(db):
                 pass
     return max_idx + 1
 
-def create_face_database_from_webcam(output_file="face_db.json",
-                                     model_name="ArcFace",
-                                     detector_backend="retinaface"):
-    """Create or append to face database by capturing face(s) from webcam.
-
-    - If output_file exists, it is loaded and new persons are appended.
-    - Default name suggested is person{N} where N is next available index.
-    - If provided name already exists, user can choose to append embeddings, overwrite or skip.
-    """
-    db = _load_existing_db(output_file)
-    next_idx = _next_person_index(db)
-
+def create_face_database_from_webcam(model_name="ArcFace", detector_backend="retinaface"):
+    """Capture face → extract embedding → save (id, embedding) into DB"""
     while True:
-        default_name = f"person{next_idx}"
-        prompt = f"Enter person's name (press Enter for '{default_name}', type 'exit' to finish): "
-        name_in = input(prompt).strip()
-        if name_in.lower() == "exit":
+        account_id = input("Enter account ID (or type 'exit' to quit): ").strip()
+        if account_id.lower() == "exit":
             break
-        name = name_in if name_in else default_name
-
-        # If name already exists, ask what to do
-        if name in db:
-            while True:
-                choice = input(f"'{name}' exists. (a)ppend, (o)verwrite, (s)kip [a]: ").strip().lower()
-                if choice == "" or choice == "a":
-                    action = "append"
-                    break
-                if choice == "o":
-                    action = "overwrite"
-                    break
-                if choice == "s":
-                    action = "skip"
-                    break
-                print("Invalid choice. Enter 'a', 'o' or 's'.")
-            if action == "skip":
-                logger.info(f"Skipping {name}")
-                continue
-        else:
-            action = "create"
+        if not account_id:
+            print("⚠️  Account ID cannot be empty")
+            continue
 
         temp_img = capture_face_from_webcam_auto()
         if not temp_img:
@@ -382,73 +352,24 @@ def create_face_database_from_webcam(output_file="face_db.json",
 
         embeddings = get_face_embedding(temp_img, model_name, detector_backend, augment=True)
         if embeddings:
-            if action == "overwrite":
-                db[name] = {"embeddings": embeddings}
-                logger.info(f"Overwrote embeddings for {name} ({len(embeddings)} vectors)")
-            elif action == "append":
-                existing = db.get(name, {}).get("embeddings", [])
-                if not isinstance(existing, list):
-                    existing = []
-                existing.extend(embeddings)
-                db[name] = {"embeddings": existing}
-                logger.info(f"Appended {len(embeddings)} embeddings to {name} (total now {len(existing)})")
-            else:  # create
-                db[name] = {"embeddings": embeddings}
-                logger.info(f"Added {len(embeddings)} embeddings for new {name}")
-
-            # Save database immediately after each successful addition via repository
+            # Use first embedding
             try:
-                # Convert current db (legacy format) to repository format
-                repo_db = {k: v.get("embeddings", []) if isinstance(v, dict) else [] for k, v in db.items()}
-                repo.save(repo_db)
-                logger.info(f"Database updated and saved via repository: {repo.path}")
+                # If database layer expects JSON-serializable embedding
+                from database.db import insert_embedding
+                insert_embedding(account_id, embeddings[0])   # ✅ DB insert
+                logger.info(f"✅ Saved embedding for account {account_id} into DB")
+                print(f"✅ Saved embedding for account {account_id} into DB")
             except Exception as e:
-                logger.error(f"Failed to save database after adding {name}: {e}")
-
-            # If we used the default personN name, increment next index to avoid collision
-            m = re.match(r"person(\d+)$", name, re.IGNORECASE)
-            if m:
-                try:
-                    used_idx = int(m.group(1))
-                    if used_idx >= next_idx:
-                        next_idx = used_idx + 1
-                except Exception:
-                    next_idx += 1
-            else:
-                # non-default name used, still increment to keep personN sequence free
-                next_idx += 1
+                logger.error(f"Failed to save embedding for {account_id}: {e}")
+                print(f"❌ Failed to save embedding for {account_id}: {e}")
         else:
-            logger.warning(f"No face embeddings extracted for {name}")
+            logger.warning(f"No embeddings extracted for {account_id}")
 
-        # delete temporary image
-        try:
-            if temp_img and os.path.exists(temp_img):
+        if temp_img and os.path.exists(temp_img):
+            try:
                 os.remove(temp_img)
-        except Exception:
-            pass
-
-    # Final save to ensure everything is persisted via repository
-    if db:
-        try:
-            repo_db = {k: v.get("embeddings", []) if isinstance(v, dict) else [] for k, v in db.items()}
-            repo.save(repo_db)
-            logger.info(f"Final save: Face database saved via repository: {repo.path} with {len(db)} people")
-            print(f"\n✅ Database saved successfully!")
-            print(f"📁 File: {repo.path}")
-            print(f"👥 Total people: {len(db)}")
-        except Exception as e:
-            logger.error(f"Failed to save via repository: {e}")
-            print(f"\n❌ Failed to save database: {e}")
-    else:
-        logger.warning("No faces were added to the database")
-        print("\n⚠️  No faces were added to the database")
-        # Create an empty database file so the live recognition doesn't crash
-        try:
-            repo.save({})
-            logger.info(f"Created empty database file via repository: {repo.path}")
-            print(f"📄 Created empty database file: {repo.path}")
-        except Exception as e:
-            logger.error(f"Failed to create empty database file: {e}")
+            except Exception:
+                pass
 
 if __name__ == "__main__":
     create_face_database_from_webcam()

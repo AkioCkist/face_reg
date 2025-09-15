@@ -398,9 +398,71 @@ def display_confirmation_status(display_frame):
 # ---------------------------
 # Persistence: use repository for DB load/save
 # ---------------------------
+
+from persistence.repository import FaceRepository
+import json
+import numpy as np
+
 # Initialize repository (creates directory if needed) and load DB
 repo = FaceRepository("face_db.json")
-embeddings_db = repo.load()
+
+def load_embeddings_from_database():
+    """Try to load embeddings from SQL DB (database.db.get_all_embeddings).
+    Convert returned values to the legacy format: {id: [np.array(...), ...]}
+    """
+    try:
+        from database import db as sql_db
+        # Ensure table exists (safe; no-op if already present)
+        try:
+            sql_db.ensure_table_exists()
+        except Exception:
+            # continue even if ensure_table_exists isn't available
+            pass
+
+        rows = sql_db.get_all_embeddings()
+        if not rows:
+            logger.info("No rows returned from SQL DB.")
+            return {}
+
+        out = {}
+        for id_, emb in rows.items():
+            try:
+                # emb may be:
+                # - a single list of floats -> treat as one embedding
+                # - a list of lists -> treat as multiple embeddings
+                # - a JSON string -> parse then handle above
+                if isinstance(emb, str):
+                    parsed = json.loads(emb)
+                else:
+                    parsed = emb
+
+                if isinstance(parsed, list) and parsed and isinstance(parsed[0], (list, tuple)):
+                    out[id_] = [np.array(e, dtype=float) for e in parsed]
+                elif isinstance(parsed, list):
+                    out[id_] = [np.array(parsed, dtype=float)]
+                else:
+                    # Unknown format; skip
+                    logger.warning(f"Skipping DB entry {id_}: unexpected embedding format")
+            except Exception as e:
+                logger.warning(f"Failed to parse embedding for {id_} from DB: {e}")
+        logger.info(f"Loaded {len(out)} entries from SQL DB.")
+        return out
+
+    except Exception as e:
+        logger.warning(f"Could not load embeddings from SQL DB: {e}")
+        return {}
+
+# Try DB first, then fallback to repository file
+embeddings_db = load_embeddings_from_database()
+if not embeddings_db:
+    try:
+        embeddings_db = repo.load()
+        logger.info(f"Loaded embeddings from repository file ({repo.path}): {len(embeddings_db)} people")
+    except Exception as e:
+        embeddings_db = {}
+        logger.error(f"Failed to load embeddings from repository: {e}")
+else:
+    logger.info("Using embeddings loaded from SQL database.")
 
 # ---------------------------
 # Configuration: load from config.json
