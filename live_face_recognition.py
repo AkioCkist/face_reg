@@ -54,10 +54,63 @@ def load_config():
             }
         }
 
+def analyze_lighting_conditions(face_roi, config):
+    """Analyze lighting conditions and determine compensation factors"""
+    try:
+        # Get lighting compensation settings
+        lighting_comp = config.get("anti_spoofing", {}).get("lighting_compensation", {})
+        enabled = lighting_comp.get("enabled", True)
+        
+        if not enabled:
+            return 1.0, "normal"
+            
+        # Convert to grayscale for brightness analysis
+        if len(face_roi.shape) > 2:
+            gray = cv2.cvtColor(face_roi, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = face_roi
+            
+        # Calculate average brightness
+        avg_brightness = np.mean(gray)
+        min_brightness = lighting_comp.get("min_brightness", 30)
+        max_brightness = lighting_comp.get("max_brightness", 220)
+        
+        # Determine lighting condition
+        if avg_brightness < min_brightness:
+            light_condition = "low"
+            # Calculate adjustment factor - more lenient in very dark conditions
+            factor = lighting_comp.get("low_light_texture_factor", 0.7)
+            factor = max(0.5, factor * (avg_brightness / min_brightness))
+            
+        elif avg_brightness > max_brightness:
+            light_condition = "bright"
+            # Calculate adjustment factor - stricter in very bright conditions
+            factor = lighting_comp.get("bright_light_texture_factor", 1.3)
+            
+        else:
+            # Normal lighting
+            light_condition = "normal"
+            # Linear interpolation between low and bright factors
+            norm_brightness = (avg_brightness - min_brightness) / (max_brightness - min_brightness)
+            low_factor = lighting_comp.get("low_light_texture_factor", 0.7)
+            bright_factor = lighting_comp.get("bright_light_texture_factor", 1.3)
+            factor = low_factor + norm_brightness * (bright_factor - low_factor)
+            
+        logger.debug(f"Lighting condition: {light_condition}, brightness: {avg_brightness:.1f}, adjustment factor: {factor:.2f}")
+        return factor, light_condition
+        
+    except Exception as e:
+        logger.warning(f"Lighting analysis failed: {e}")
+        return 1.0, "normal"  # Default to no adjustment
+
 def check_anti_spoofing_live(frame, face_region, previous_frame=None):
     """DeepFace built-in anti-spoofing analysis for live recognition"""
     config = load_config()
     anti_spoof_config = config.get("anti_spoofing", {})
+    
+    # Check for adaptive mode
+    mode = anti_spoof_config.get("mode", "normal")
+    is_adaptive = mode == "adaptive"
     
     if not anti_spoof_config.get("enabled", True):
         return True, "Anti-spoofing disabled", 1.0
@@ -76,9 +129,51 @@ def check_anti_spoofing_live(frame, face_region, previous_frame=None):
         # Extract face region
         face_roi = frame[y:y+h, x:x+w]
         
+        # Analyze lighting conditions if in adaptive mode
+        lighting_factor = 1.0
+        light_condition = "normal"
+        if is_adaptive:
+            lighting_factor, light_condition = analyze_lighting_conditions(face_roi, config)
+            
+        # Check for motion if previous frame exists
+        if previous_frame is not None and is_adaptive:
+            # Adjust motion threshold based on lighting
+            motion_threshold = anti_spoof_config.get("motion_threshold", 5.0)
+            if light_condition == "low":
+                # Lower expectations for motion in low light (more noise, less detail)
+                motion_threshold *= 0.7
+            
+            try:
+                prev_roi = previous_frame[y:y+h, x:x+w]
+                if prev_roi.shape == face_roi.shape:
+                    # Simple motion detection
+                    diff = cv2.absdiff(prev_roi, face_roi)
+                    motion_score = np.mean(diff)
+                    
+                    if motion_score < motion_threshold and light_condition != "low":
+                        logger.debug(f"Low motion detected: {motion_score:.1f} < {motion_threshold}")
+                        # In low light, don't reject purely on motion - it's unreliable
+                        if light_condition != "low":
+                            return False, f"Low motion: {motion_score:.1f}", 0.3
+            except Exception as e:
+                logger.warning(f"Motion check failed: {e}")
+        
         # Save temporary face image for DeepFace analysis
         temp_face_path = "temp_face_live_antispoofing.jpg"
-        cv2.imwrite(temp_face_path, face_roi)
+        
+        # In low light, try enhancing the image before analysis
+        if is_adaptive and light_condition == "low":
+            # Apply histogram equalization to improve contrast
+            gray = cv2.cvtColor(face_roi, cv2.COLOR_BGR2GRAY)
+            equalized = cv2.equalizeHist(gray)
+            enhanced_roi = cv2.cvtColor(equalized, cv2.COLOR_GRAY2BGR)
+            
+            # Blend original with enhanced version to maintain some color
+            alpha = 0.7  # Weight for enhanced image
+            blended_roi = cv2.addWeighted(face_roi, 1-alpha, enhanced_roi, alpha, 0)
+            cv2.imwrite(temp_face_path, blended_roi)
+        else:
+            cv2.imwrite(temp_face_path, face_roi)
         
         # Use DeepFace's built-in anti-spoofing
         result = DeepFace.extract_faces(
@@ -98,13 +193,26 @@ def check_anti_spoofing_live(frame, face_region, previous_frame=None):
                 is_real = face_info['is_real']
                 confidence = face_info.get('antispoof_score', 0.5)
                 
-                if is_real:
-                    return True, f"Real face (conf: {confidence:.3f})", confidence
+                # Apply lighting compensation to confidence threshold in adaptive mode
+                min_confidence = 0.5
+                if is_adaptive:
+                    if light_condition == "low":
+                        # Be more lenient in low light
+                        min_confidence = 0.4
+                    elif light_condition == "bright":
+                        # Be more strict in bright light
+                        min_confidence = 0.6
+                
+                if is_real or (is_adaptive and confidence >= min_confidence):
+                    if light_condition == "low":
+                        return True, f"Real face (low light, conf: {confidence:.3f})", confidence
+                    else:
+                        return True, f"Real face (conf: {confidence:.3f})", confidence
                 else:
                     return False, f"Fake face (conf: {confidence:.3f})", confidence
             else:
                 # Fallback if anti-spoofing data not available
-                return True, "Anti-spoofing data not available", 0.5
+                return check_anti_spoofing_fallback(frame, face_region)
         else:
             return False, "No face detected for analysis", 0.0
             
@@ -116,21 +224,77 @@ def check_anti_spoofing_live(frame, face_region, previous_frame=None):
 def check_anti_spoofing_fallback(frame, face_region):
     """Fallback anti-spoofing checks if DeepFace fails"""
     try:
+        config = load_config()
+        anti_spoof_config = config.get("anti_spoofing", {})
+        mode = anti_spoof_config.get("mode", "normal")
+        is_adaptive = mode == "adaptive"
+        
         x, y, w, h = face_region
         face_roi = frame[y:y+h, x:x+w]
+        
+        # Analyze lighting conditions if in adaptive mode
+        lighting_factor = 1.0
+        light_condition = "normal"
+        if is_adaptive:
+            lighting_factor, light_condition = analyze_lighting_conditions(face_roi, config)
         
         # Basic texture analysis
         gray_face = cv2.cvtColor(face_roi, cv2.COLOR_BGR2GRAY)
         texture_variance = np.var(gray_face)
         
-        if texture_variance < 100:
-            return False, f"Low texture: {texture_variance:.1f}", 0.3
+        # Get texture threshold from config and adjust it based on lighting conditions
+        base_texture_thresh = anti_spoof_config.get('texture_variance_threshold', 80)
         
-        return True, f"Fallback OK: {texture_variance:.1f}", 0.7
+        if is_adaptive:
+            # Apply lighting compensation
+            adjusted_thresh = base_texture_thresh * lighting_factor
+            logger.debug(f"Adjusted texture threshold: {base_texture_thresh} → {adjusted_thresh} (factor: {lighting_factor})")
+        else:
+            adjusted_thresh = base_texture_thresh
+        
+        # If lighting is too dark, normalize the face for better texture analysis
+        if is_adaptive and light_condition == "low":
+            # Apply histogram equalization to improve contrast in low light
+            equalized_face = cv2.equalizeHist(gray_face)
+            equalized_variance = np.var(equalized_face)
+            
+            # If equalization helps, use the improved texture variance
+            if equalized_variance > texture_variance:
+                logger.debug(f"Using equalized texture variance: {texture_variance:.1f} → {equalized_variance:.1f}")
+                texture_variance = equalized_variance
+        
+        # Check texture variance against adjusted threshold
+        if texture_variance < adjusted_thresh:
+            if is_adaptive and light_condition == "low":
+                # In low light with adaptive mode, check if it's extremely low
+                if texture_variance < adjusted_thresh * 0.5:
+                    return False, f"Very low texture: {texture_variance:.1f} (low light)", 0.2
+                else:
+                    # If it's marginal in low light, give benefit of doubt
+                    return True, f"Low light - acceptable texture: {texture_variance:.1f}", 0.6
+            else:
+                return False, f"Low texture: {texture_variance:.1f}", 0.3
+        
+        # Additional lighting-aware confidence calculation
+        if is_adaptive:
+            if light_condition == "low":
+                confidence = 0.6  # Lower confidence in low light
+            elif light_condition == "bright":
+                confidence = 0.8  # Higher confidence in good lighting
+            else:
+                confidence = 0.7  # Normal lighting
+        else:
+            confidence = 0.7
+            
+        return True, f"Fallback OK: {texture_variance:.1f}", confidence
         
     except Exception as e:
         logger.warning(f"Fallback anti-spoofing failed: {e}")
-        return True, "Check failed, assuming real", 0.5
+        # In adaptive mode with an error, give benefit of doubt
+        if is_adaptive:
+            return True, "Check failed in adaptive mode, assuming real", 0.5
+        else:
+            return True, "Check failed, assuming real", 0.5
 
 # ---------------------------
 # Incremental Learning Functions
