@@ -615,6 +615,40 @@ def create_face_database_from_webcam(model_name="ArcFace", detector_backend="ret
         if not account_id:
             print("⚠️  Account ID cannot be empty")
             continue
+        
+        # Check if ID already exists in database
+        try:
+            # First try using the repository
+            existing_data = repo.load()
+            id_exists = account_id in existing_data
+            
+            # If not found in repository, try database layer directly
+            if not id_exists:
+                try:
+                    from database.db import check_id_exists
+                    id_exists = check_id_exists(account_id)
+                except (ImportError, AttributeError):
+                    # If database module doesn't have this function, use what we have
+                    pass
+                    
+            if id_exists:
+                print(f"⚠️  Account ID '{account_id}' already exists in the database.")
+                action = ""
+                while action.lower() not in ["override", "skip", "exit"]:
+                    action = input("Choose an action [override/skip/exit]: ").strip().lower()
+                
+                if action == "skip":
+                    print(f"Skipping ID '{account_id}'")
+                    continue
+                elif action == "exit":
+                    break
+                elif action == "override":
+                    print(f"Will override existing embedding for '{account_id}'")
+                    # Continue with capture process for override
+            
+        except Exception as e:
+            logger.warning(f"Error checking existing ID: {e}")
+            # Continue anyway to avoid blocking registration due to DB errors
 
         temp_img = capture_face_from_webcam_auto()
         if not temp_img:
@@ -662,5 +696,3 @@ def create_face_database_from_webcam(model_name="ArcFace", detector_backend="ret
 if __name__ == "__main__":
     create_face_database_from_webcam()
 
-if __name__ == "__main__":
-    create_face_database_from_webcam()

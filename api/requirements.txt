@@ -1,0 +1,37 @@
+# Face Recognition API Requirements
+# Core FastAPI dependencies
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+websockets==12.0
+python-multipart==0.0.6
+
+# Data processing and validation
+pydantic==2.5.0
+pydantic-settings==2.1.0
+
+# Image processing and computer vision
+opencv-python==4.8.1.78
+numpy==1.24.3
+Pillow==10.1.0
+
+# Face recognition and deep learning
+deepface==0.0.79
+tensorflow==2.13.0  # or tensorflow-cpu==2.13.0 for CPU-only
+tf-keras==2.13.1
+
+# Database connectivity
+sqlalchemy==2.0.23
+psycopg2-binary==2.9.9  # for PostgreSQL
+
+# Utilities
+python-jose[cryptography]==3.3.0  # for JWT tokens (optional)
+python-dotenv==1.0.0  # for environment variables
+tqdm==4.66.1
+
+# Development and testing (optional)
+pytest==7.4.3
+httpx==0.25.2  # for testing async endpoints
+pytest-asyncio==0.21.1
+
+# CORS and middleware
+starlette==0.27.0
