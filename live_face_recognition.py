@@ -48,18 +48,19 @@ def load_config():
             "anti_spoofing": {
                 "enabled": True,
                 "mode": "adaptive",
-                "texture_variance_threshold": 60,
-                "edge_density_threshold": 0.03,
-                "color_variance_threshold": 150,
-                "motion_threshold": 5.0,
+                "texture_variance_threshold": 40,
+                "edge_density_threshold": 0.02,
+                "color_variance_threshold": 100,
+                "motion_threshold": 3.0,
+                "confidence_boost_real_face": 0.25,
                 "lighting_compensation": {
                     "enabled": True,
-                    "min_brightness": 20,
-                    "max_brightness": 235,
+                    "min_brightness": 10,
+                    "max_brightness": 350,
                     "adjust_thresholds": True,
-                    "low_light_texture_factor": 0.5,
-                    "bright_light_texture_factor": 1.5,
-                    "brightness_variance_threshold": 40
+                    "low_light_texture_factor": 0.3,
+                    "bright_light_texture_factor": 2.0,
+                    "brightness_variance_threshold": 25
                 }
             }
         }
@@ -207,11 +208,16 @@ def check_anti_spoofing_live(frame, face_region, previous_frame=None):
                 min_confidence = 0.5
                 if is_adaptive:
                     if light_condition == "low":
-                        # Be more lenient in low light
-                        min_confidence = 0.4
+                        # Be very lenient in low light
+                        min_confidence = 0.3
                     elif light_condition == "bright":
-                        # Be more strict in bright light
-                        min_confidence = 0.6
+                        # Still be lenient in bright light
+                        min_confidence = 0.45
+                
+                # Additional boost for real faces in challenging conditions
+                confidence_boost = anti_spoof_config.get('confidence_boost_real_face', 0.25)
+                if is_real and is_adaptive:
+                    confidence += confidence_boost
                 
                 if is_real or (is_adaptive and confidence >= min_confidence):
                     if light_condition == "low":
@@ -219,6 +225,9 @@ def check_anti_spoofing_live(frame, face_region, previous_frame=None):
                     else:
                         return True, f"Real face (conf: {confidence:.3f})", confidence
                 else:
+                    # Even if marked as fake, give benefit of doubt in adaptive mode
+                    if is_adaptive and confidence >= 0.25:
+                        return True, f"Benefit of doubt - challenging conditions (conf: {confidence:.3f})", confidence
                     return False, f"Fake face (conf: {confidence:.3f})", confidence
             else:
                 # Fallback if anti-spoofing data not available
@@ -276,14 +285,20 @@ def check_anti_spoofing_fallback(frame, face_region):
         # Check texture variance against adjusted threshold
         if texture_variance < adjusted_thresh:
             if is_adaptive and light_condition == "low":
-                # In low light with adaptive mode, check if it's extremely low
-                if texture_variance < adjusted_thresh * 0.5:
-                    return False, f"Very low texture: {texture_variance:.1f} (low light)", 0.2
+                # In low light with adaptive mode, be very lenient
+                if texture_variance < adjusted_thresh * 0.3:
+                    return False, f"Extremely low texture: {texture_variance:.1f} (low light)", 0.3
                 else:
-                    # If it's marginal in low light, give benefit of doubt
-                    return True, f"Low light - acceptable texture: {texture_variance:.1f}", 0.6
+                    # If it's marginal in low light, give strong benefit of doubt
+                    return True, f"Low light - texture acceptable: {texture_variance:.1f}", 0.7
+            elif is_adaptive and light_condition == "bright":
+                # In bright light, also be more forgiving
+                return True, f"Bright light - texture acceptable: {texture_variance:.1f}", 0.6
             else:
-                return False, f"Low texture: {texture_variance:.1f}", 0.3
+                # Even in normal conditions, be more lenient
+                if texture_variance > adjusted_thresh * 0.6:
+                    return True, f"Marginal texture but acceptable: {texture_variance:.1f}", 0.5
+                return False, f"Low texture: {texture_variance:.1f}", 0.4
         
         # Additional lighting-aware confidence calculation
         if is_adaptive:

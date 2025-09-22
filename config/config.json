@@ -32,21 +32,21 @@
   "anti_spoofing": {
     "enabled": true,
     "mode": "adaptive",
-    "eye_aspect_ratio_threshold": 0.25,
-    "blink_frames_threshold": 3,
-    "motion_threshold": 5.0,
-    "texture_variance_threshold": 60,
-    "edge_density_threshold": 0.03,
-    "color_variance_threshold": 150,
-    "confidence_boost_real_face": 0.15,
+    "eye_aspect_ratio_threshold": 0.15,
+    "blink_frames_threshold": 2,
+    "motion_threshold": 3.0,
+    "texture_variance_threshold": 40,
+    "edge_density_threshold": 0.02,
+    "color_variance_threshold": 100,
+    "confidence_boost_real_face": 0.25,
     "lighting_compensation": {
       "enabled": true,
-      "min_brightness": 20,
-      "max_brightness": 235,
+      "min_brightness": 10,
+      "max_brightness": 350,
       "adjust_thresholds": true,
-      "low_light_texture_factor": 0.5,
-      "bright_light_texture_factor": 1.5,
-      "brightness_variance_threshold": 40
+      "low_light_texture_factor": 0.3,
+      "bright_light_texture_factor": 2.0,
+      "brightness_variance_threshold": 25
     }
   },
   "incremental_learning": {
