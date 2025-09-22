@@ -47,10 +47,20 @@ def load_config():
             },
             "anti_spoofing": {
                 "enabled": True,
-                "texture_variance_threshold": 100,
-                "edge_density_threshold": 0.05,
-                "color_variance_threshold": 200,
-                "motion_threshold": 5.0
+                "mode": "adaptive",
+                "texture_variance_threshold": 60,
+                "edge_density_threshold": 0.03,
+                "color_variance_threshold": 150,
+                "motion_threshold": 5.0,
+                "lighting_compensation": {
+                    "enabled": True,
+                    "min_brightness": 20,
+                    "max_brightness": 235,
+                    "adjust_thresholds": True,
+                    "low_light_texture_factor": 0.5,
+                    "bright_light_texture_factor": 1.5,
+                    "brightness_variance_threshold": 40
+                }
             }
         }
 

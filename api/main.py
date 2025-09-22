@@ -25,6 +25,7 @@ import uvicorn
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, parent_dir)
 
+# Import custom modules
 try:
     from setup_logging import setup_logging
     from face_db import get_face_embedding, check_anti_spoofing_deepface

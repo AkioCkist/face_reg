@@ -121,7 +121,21 @@ def check_anti_spoofing_deepface(frame, face_region):
         
         # Save temporary face image for DeepFace analysis
         temp_face_path = "temp_face_antispoofing.jpg"
-        cv2.imwrite(temp_face_path, face_roi)
+        
+        # In low light, try enhancing the image before analysis
+        if is_adaptive and light_condition == "low":
+            # Apply histogram equalization to improve contrast
+            gray = cv2.cvtColor(face_roi, cv2.COLOR_BGR2GRAY)
+            equalized = cv2.equalizeHist(gray)
+            enhanced_roi = cv2.cvtColor(equalized, cv2.COLOR_GRAY2BGR)
+            
+            # Blend original with enhanced version to maintain some color information
+            alpha = 0.7  # Weight for enhanced image
+            blended_roi = cv2.addWeighted(face_roi, 1-alpha, enhanced_roi, alpha, 0)
+            cv2.imwrite(temp_face_path, blended_roi)
+            logger.debug("Applied low-light enhancement for anti-spoofing analysis")
+        else:
+            cv2.imwrite(temp_face_path, face_roi)
         
         # Use DeepFace's built-in anti-spoofing
         result = DeepFace.extract_faces(
