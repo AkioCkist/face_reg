@@ -95,8 +95,11 @@ def analyze_lighting_conditions(face_roi, config):
             
         elif avg_brightness > max_brightness:
             light_condition = "bright"
-            # Calculate adjustment factor - stricter in very bright conditions
-            factor = lighting_comp.get("bright_light_texture_factor", 1.3)
+            # Be much more lenient in bright conditions - reduce factor to make it easier
+            factor = lighting_comp.get("bright_light_texture_factor", 0.8)
+            # Scale factor based on how bright it is - brighter = more lenient
+            brightness_ratio = avg_brightness / max_brightness
+            factor = max(0.5, factor / brightness_ratio)  # More lenient as brightness increases
             
         else:
             # Normal lighting
@@ -211,8 +214,11 @@ def check_anti_spoofing_live(frame, face_region, previous_frame=None):
                         # Be very lenient in low light
                         min_confidence = 0.3
                     elif light_condition == "bright":
-                        # Still be lenient in bright light
-                        min_confidence = 0.45
+                        # Be very lenient in bright light too
+                        min_confidence = 0.2
+                    else:
+                        # Normal lighting
+                        min_confidence = 0.4
                 
                 # Additional boost for real faces in challenging conditions
                 confidence_boost = anti_spoof_config.get('confidence_boost_real_face', 0.25)
@@ -292,12 +298,12 @@ def check_anti_spoofing_fallback(frame, face_region):
                     # If it's marginal in low light, give strong benefit of doubt
                     return True, f"Low light - texture acceptable: {texture_variance:.1f}", 0.7
             elif is_adaptive and light_condition == "bright":
-                # In bright light, also be more forgiving
-                return True, f"Bright light - texture acceptable: {texture_variance:.1f}", 0.6
+                # In bright light, be very forgiving - almost always pass
+                return True, f"Bright light - bypassing texture check: {texture_variance:.1f}", 0.8
             else:
                 # Even in normal conditions, be more lenient
-                if texture_variance > adjusted_thresh * 0.6:
-                    return True, f"Marginal texture but acceptable: {texture_variance:.1f}", 0.5
+                if texture_variance > adjusted_thresh * 0.5:
+                    return True, f"Marginal texture but acceptable: {texture_variance:.1f}", 0.6
                 return False, f"Low texture: {texture_variance:.1f}", 0.4
         
         # Additional lighting-aware confidence calculation
@@ -305,7 +311,7 @@ def check_anti_spoofing_fallback(frame, face_region):
             if light_condition == "low":
                 confidence = 0.6  # Lower confidence in low light
             elif light_condition == "bright":
-                confidence = 0.8  # Higher confidence in good lighting
+                confidence = 0.9  # Higher confidence in bright light - faces are clearer
             else:
                 confidence = 0.7  # Normal lighting
         else:
@@ -521,6 +527,47 @@ def validate_embedding_consistency(person_name, new_embedding, existing_embeddin
 # ---------------------------
 # Identity Confirmation Functions
 # ---------------------------
+def check_auto_exit(person_name, confidence_score, live_score):
+    """Check if we should auto-exit after successful recognition"""
+    config = load_config()
+    auto_exit_config = config.get("auto_exit", {})
+    
+    if not auto_exit_config.get("enabled", False):
+        return False
+    
+    min_confidence = auto_exit_config.get("min_confidence", 0.5)
+    
+    # Auto-exit if we have a recognized person with sufficient confidence
+    if (person_name != "Unknown" and 
+        confidence_score >= min_confidence and 
+        live_score > 0):
+        
+        logger.info(f"🎯 AUTO-EXIT TRIGGERED!")
+        logger.info(f"   Recognized: {person_name}")
+        logger.info(f"   Confidence: {confidence_score:.3f}")
+        logger.info(f"   Live Score: {live_score:.3f}")
+        
+        # Write result to file for external access
+        result_data = {
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "recognized": True,
+            "person_name": person_name,
+            "confidence": confidence_score,
+            "live_score": live_score,
+            "success": True
+        }
+        
+        try:
+            with open("recognition_result.txt", "w") as f:
+                json.dump(result_data, f, indent=2)
+            logger.info("✅ Recognition result saved to recognition_result.txt")
+        except Exception as e:
+            logger.error(f"Failed to save result: {e}")
+        
+        return True
+    
+    return False
+
 def check_identity_confirmation(person_name, confidence_score, live_score):
     """Check if identity should be confirmed and trigger program exit"""
     global identity_confirmed, confirmed_identity, confirmation_count
@@ -529,9 +576,9 @@ def check_identity_confirmation(person_name, confidence_score, live_score):
     config = load_config()
     confirmation_config = config.get("identity_confirmation", {})
     
-    min_confirmations = confirmation_config.get("min_confirmations", 3)
-    min_confidence = confirmation_config.get("min_confidence_for_confirmation", 0.9)
-    min_live_score = confirmation_config.get("min_live_score_for_confirmation", 0.8)
+    min_confirmations = confirmation_config.get("min_confirmations", 1)
+    min_confidence = confirmation_config.get("min_confidence_for_confirmation", 0.6)
+    min_live_score = confirmation_config.get("min_live_score_for_confirmation", 0.5)
     
     # Check if this recognition meets confirmation criteria
     if (confidence_score >= min_confidence and 
@@ -557,6 +604,24 @@ def check_identity_confirmation(person_name, confidence_score, live_score):
             logger.info(f"   Confirmations: {confirmation_count[person_name]}")
             logger.info(f"   Final confidence: {confidence_score:.3f}")
             logger.info(f"   Final live score: {live_score:.3f}")
+            
+            # Save result to file for external access
+            result_data = {
+                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "recognized": True,
+                "person_name": person_name,
+                "confidence": confidence_score,
+                "live_score": live_score,
+                "success": True,
+                "method": "identity_confirmation"
+            }
+            
+            try:
+                with open("recognition_result.txt", "w") as f:
+                    json.dump(result_data, f, indent=2)
+                logger.info("✅ Recognition result saved to recognition_result.txt")
+            except Exception as e:
+                logger.error(f"Failed to save result: {e}")
             
             return True
     else:
@@ -795,7 +860,13 @@ def recognition_worker(frame_queue, result_queue):
                         confidence_score = 1 - best_score  # Convert distance to confidence
                         label = f"{best_match} ({best_score:.2f}) [LIVE:{live_score:.2f}]"
                         
-                        # Check for identity confirmation
+                        # Check for auto-exit first (immediate exit on recognition)
+                        if check_auto_exit(best_match, confidence_score, live_score):
+                            logger.info("Auto-exit triggered - stopping recognition")
+                            result_queue.put(f"AUTO_EXIT:{best_match}:{confidence_score:.3f}:{live_score:.3f}")
+                            return  # Exit the worker thread immediately
+                        
+                        # Check for identity confirmation (legacy multi-confirmation system)
                         if check_identity_confirmation(best_match, confidence_score, live_score):
                             # Identity confirmed - signal to exit immediately
                             logger.info("Identity confirmed - triggering immediate exit")
@@ -861,6 +932,14 @@ def recognition_worker(frame_queue, result_queue):
                         label = f"Unknown ({best_score:.2f}) [LIVE:{live_score:.2f}]"
                         # Never update embeddings for unknown faces
                         logger.debug(f"Skipping embedding update: unknown person (score: {best_score:.3f})")
+                        
+                        # Check if we should auto-exit for unknown faces too (optional)
+                        config = load_config()
+                        auto_exit_config = config.get("auto_exit", {})
+                        if auto_exit_config.get("enabled", False) and auto_exit_config.get("exit_on_unknown", False):
+                            logger.info("Auto-exit triggered for unknown face")
+                            result_queue.put(f"AUTO_EXIT:Unknown:{best_score:.3f}:{live_score:.3f}")
+                            return
                 else:
                     # Face detected but failed anti-spoofing
                     label = f"SPOOF DETECTED: {spoof_reason}"
@@ -937,6 +1016,21 @@ while True:
             logger.info("Identity confirmation received - exiting immediately")
             print(f"[SUCCESS] Identity confirmed: {confirmed_identity}")
             break
+        elif isinstance(new_results, str) and new_results.startswith("AUTO_EXIT:"):
+            # Auto-exit triggered - parse and exit immediately
+            parts = new_results.split(":")
+            if len(parts) >= 4:
+                person_name = parts[1]
+                confidence = parts[2]
+                live_score = parts[3]
+                logger.info("Auto-exit signal received - exiting immediately")
+                print(f"[SUCCESS] Face recognized: {person_name} (confidence: {confidence}, live: {live_score})")
+                print(f"[INFO] Result saved to recognition_result.txt")
+                
+                # Small delay to show final result
+                import time
+                time.sleep(1.0)
+                break
         elif new_results:
             recent_results = new_results
 

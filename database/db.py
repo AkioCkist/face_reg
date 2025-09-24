@@ -29,6 +29,17 @@ engine = create_engine(url, echo=False, future=True)
 # -----------------------------
 metadata = MetaData()
 
+# Define account table (for reference only - don't create it here)
+account = Table(
+    "account",
+    metadata,
+    Column("id", String(50), primary_key=True),
+    Column("name", String(255), nullable=False),
+    Column("password", String(255), nullable=False),
+    Column("role", String(50), nullable=False),
+    Column("date_created", String, nullable=True),
+)
+
 face_embeddings = Table(
     "face_embeddings",
     metadata,
@@ -135,6 +146,49 @@ def delete_embedding(account_id: str):
     stmt = delete(face_embeddings).where(face_embeddings.c.id == account_id)
     with engine.begin() as conn:
         conn.execute(stmt)
+
+# -----------------------------
+# Account management functions
+# -----------------------------
+def account_exists(account_id: str) -> bool:
+    """Check if an account exists in the database"""
+    from sqlalchemy import select
+    stmt = select(account.c.id).where(account.c.id == account_id)
+    with engine.connect() as conn:
+        result = conn.execute(stmt).fetchone()
+        return result is not None
+
+def create_account(account_id: str, name: str = None, password: str = "default", role: str = "user"):
+    """Create a new account if it doesn't exist"""
+    if account_exists(account_id):
+        return False  # Account already exists
+    
+    # Use account_id as name if name not provided
+    if name is None:
+        name = account_id
+    
+    from sqlalchemy import insert
+    from datetime import datetime
+    
+    stmt = insert(account).values(
+        id=account_id,
+        name=name,
+        password=password,
+        role=role,
+        date_created=datetime.now().isoformat()
+    )
+    
+    with engine.begin() as conn:
+        conn.execute(stmt)
+    
+    return True  # Account created
+
+def ensure_account_exists(account_id: str, name: str = None, role: str = "user"):
+    """Ensure an account exists, create it if it doesn't"""
+    if not account_exists(account_id):
+        created = create_account(account_id, name, role=role)
+        return created
+    return False  # Account already existed
 
 # -----------------------------
 # Example usage

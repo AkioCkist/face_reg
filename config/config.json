@@ -1,13 +1,18 @@
 {
   "detection": {
     "backends": ["retinaface", "mediapipe", "mtcnn", "opencv"],
-    "similarity_threshold": 0.45,
-    "face_confidence_min": 0.7,
+    "similarity_threshold": 0.40,
+    "face_confidence_min": 0.6,
     "identity_confirmation": {
       "enabled": true,
-      "min_confirmations": 3,
-      "min_confidence_for_confirmation": 0.9,
-      "min_live_score_for_confirmation": 0.8
+      "min_confirmations": 1,
+      "min_confidence_for_confirmation": 0.6,
+      "min_live_score_for_confirmation": 0.5
+    },
+    "auto_exit": {
+      "enabled": true,
+      "min_confidence": 0.5,
+      "exit_delay_seconds": 1.0
     }
   },
   "performance": {
@@ -42,11 +47,11 @@
     "lighting_compensation": {
       "enabled": true,
       "min_brightness": 10,
-      "max_brightness": 350,
+      "max_brightness": 250,
       "adjust_thresholds": true,
       "low_light_texture_factor": 0.3,
-      "bright_light_texture_factor": 2.0,
-      "brightness_variance_threshold": 25
+      "bright_light_texture_factor": 0.8,
+      "brightness_variance_threshold": 40
     }
   },
   "incremental_learning": {

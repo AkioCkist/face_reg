@@ -2,3 +2,5 @@ face_db.json
 logs/
 *.log
 temp_face_*.jpg
+staff_pics/
+__pycache__/

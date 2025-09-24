@@ -1,1 +1,9 @@
-quan
+{
+  "timestamp": "2025-09-24 16:58:47",
+  "recognized": true,
+  "person_name": "23020020",
+  "confidence": 0.6108903285948818,
+  "live_score": 1.1869520246982574,
+  "success": true,
+  "method": "identity_confirmation"
+}
