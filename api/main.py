@@ -224,7 +224,7 @@ async def get_config():
         }
     }
 
-@app.post("/api/faces/register", response_model=RegisterFaceResponse)
+@app.post("/api/v1/faces/register", response_model=RegisterFaceResponse)
 async def register_face(request: RegisterFaceRequest):
     """Register a new face in the database"""
     temp_file = None
@@ -308,7 +308,7 @@ async def register_face(request: RegisterFaceRequest):
         if temp_file:
             cleanup_temp_file(temp_file)
 
-@app.post("/api/faces/recognize", response_model=RecognizeFaceResponse)
+@app.post("/api/v1/faces/recognize", response_model=RecognizeFaceResponse)
 async def recognize_face(request: RecognizeFaceRequest):
     """Recognize a face from the provided image"""
     temp_file = None
@@ -417,7 +417,7 @@ async def recognize_face(request: RecognizeFaceRequest):
         if temp_file:
             cleanup_temp_file(temp_file)
 
-@app.get("/api/faces", response_model=ListFacesResponse)
+@app.get("/api/v1/faces", response_model=ListFacesResponse)
 async def list_faces():
     """List all registered faces"""
     try:
@@ -428,10 +428,21 @@ async def list_faces():
         
         faces = []
         for account_id, embedding_data in db_embeddings.items():
+            # embedding_data is either None, a single embedding (list of floats), or a list of embeddings
+            embeddings_count = 1
+            
+            if embedding_data is None:
+                logger.warning(f"Account {account_id} has null embedding data, skipping")
+                continue
+            
             if isinstance(embedding_data, list):
-                embeddings_count = len(embedding_data) if isinstance(embedding_data[0], list) else 1
-            else:
-                embeddings_count = 1
+                # Check if this is a list of embeddings (list of lists) or a single embedding (list of floats)
+                if embedding_data and isinstance(embedding_data[0], (list, tuple)):
+                    # List of embeddings
+                    embeddings_count = len(embedding_data)
+                else:
+                    # Single embedding
+                    embeddings_count = 1
             
             faces.append(FaceInfo(
                 account_id=account_id,
@@ -449,7 +460,7 @@ async def list_faces():
         logger.error(f"Error listing faces: {e}")
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
-@app.delete("/api/faces/{account_id}", response_model=DeleteFaceResponse)
+@app.delete("/api/v1/faces/{account_id}", response_model=DeleteFaceResponse)
 async def delete_face(account_id: str):
     """Delete a registered face"""
     try:
@@ -524,7 +535,7 @@ if __name__ == "__main__":
     uvicorn.run(
         app,
         host="0.0.0.0",
-        port=8000,
+        port=3636,
         log_level="info",
         reload=False  # Set to True for development
     )
