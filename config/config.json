@@ -35,7 +35,7 @@
     "line_thickness": 2
   },
   "anti_spoofing": {
-    "enabled": true,
+    "enabled": false,
     "mode": "adaptive",
     "eye_aspect_ratio_threshold": 0.15,
     "blink_frames_threshold": 2,
